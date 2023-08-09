@@ -1,32 +1,25 @@
 {
-   "addons" : [
-      {
-         "description" : "An integrated terminal for lite-xl. *([screenshot](https://github.com/adamharrison/lite-xl-terminal/assets/1034518/eb8a72a0-ff61-4b95-b009-364ac2725f70))*",
-         "files" : [
-            {
-               "arch" : "x86_64-linux",
-               "checksum" : "2c742b98469642bc683b00c7a1f5185746b86548118d3194f9a0f6129ff4125d",
-               "url" : "https://github.com/adamharrison/lite-xl-terminal/releases/download/v1.02/libterminal.x86_64-linux.so"
-            },
-            {
-               "arch" : "x86_64-darwin",
-               "checksum" : "5b5928e721242b6582239442fa46f361688a0319a02371457f0ea562e9730d44",
-               "url" : "https://github.com/adamharrison/lite-xl-terminal/releases/download/v1.02/libterminal.x86_64-darwin.so"
-            },
-            {
-               "arch" : "aarch64-darwin",
-               "checksum" : "bcfe13dd078afdc9a454cd29126f5f7051c0dbfa0154104587812400497bc849",
-               "url" : "https://github.com/adamharrison/lite-xl-terminal/releases/download/v1.02/libterminal.aarch64-darwin.so"
-            },
-            {
-               "arch" : "x86_64-windows",
-               "checksum" : "e1cc1ad4b7b4bb9fe24f5a1acbf63b5883b77875b28075a12a5886ddb15347aa",
-               "url" : "https://github.com/adamharrison/lite-xl-terminal/releases/download/v1.02/libterminal.x86_64-windows.dll"
-            }
-         ],
-         "id" : "terminal",
-         "path" : "plugins/terminal",
-         "version" : "1.02"
-      }
-   ]
+  "addons": [{
+    "id": "terminal",
+    "description": "An integrated terminal for pragtical.",
+    "version": "1.02",
+    "path": "plugins/terminal",
+    "files": [{
+      "url": "https://github.com/pragtical/terminal/releases/download/latest/libterminal.x86_64-linux.so",
+      "arch": "x86_64-linux",
+      "checksum": "SKIP"
+    }, {
+      "url": "https://github.com/pragtical/terminal/releases/download/latest/libterminal.x86_64-darwin.so",
+      "arch": "x86_64-darwin",
+      "checksum": "SKIP"
+    }, {
+      "url": "https://github.com/pragtical/terminal/releases/download/latest/libterminal.aarch64-darwin.so",
+      "arch": "aarch64-darwin",
+      "checksum": "SKIP"
+    }, {
+      "url": "https://github.com/pragtical/terminal/releases/download/latest/libterminal.x86_64-windows.dll",
+      "arch": "x86_64-windows",
+      "checksum": "SKIP"
+    }]
+  }]
 }
