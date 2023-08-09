@@ -1,8 +1,7 @@
 name: CI
 on: { push: { branches: [master] } }
-env:
-  PPM_PLUGINS: https://raw.githubusercontent.com/adamharrison/lite-xl-maintenance/latest/lpm-plugins/gh.lua
 permissions: write-all
+
 jobs:
   version:
     runs-on: ubuntu-latest
@@ -16,8 +15,16 @@ jobs:
         id: setup_release
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: |
-          wget https://github.com/pragtical/plugin-manager/releases/download/latest/ppm.x86_64-linux -O ppm-latest && chmod +x ppm-latest
-          echo "version=`./ppm-latest gh version`" >> $GITHUB_OUTPUT
+          export VERSION=`git describe --tags --match "v*" | tail -c +2`
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building terminal version $VERSION."
+          perl -pe 'last if $_ =~ m/^\s*#/ && $_ !~ m/#\s*$ENV{VERSION}/' < CHANGELOG.md | tail -n +2 > NOTES.md
+          if [[ `git tag --points-at HEAD | head -c 1` == "v" ]]; then
+            gh release delete -y v$VERSION || true; gh release create -t v$VERSION v$VERSION
+            gh release delete -y latest || true; gh release create -t latest latest
+          fi
+          gh release delete -y continuous || true; gh release create -p -t 'Continuous Release' continuous -F NOTES.md
+
   build_linux:
     needs: [version]
     permissions: write-all
@@ -27,6 +34,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
         with: { fetch-depth: 0, submodules: true }
+      - name: Install Cross Compiler
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build Linux
         run: |
           BIN=libterminal.x86_64-linux.so ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-linux'"'
@@ -86,5 +96,14 @@ jobs:
       env:
         GITHUB_TOKEN: "${{ github.token }}"
       run: |
-        wget https://github.com/pragtical/plugin-manager/releases/download/latest/ppm.x86_64-linux -O ppm-latest && chmod +x ppm-latest
-        ./ppm-latest gh release Linux/*.so MacOS/*.so Windows/*.dll
+        if [[ `git tag --points-at HEAD | head -c 1` == "v" ]]; then
+          gh release upload v${{ needs.version.outputs.version }} Linux/*.so MacOS/*.so Windows/*.dll
+          gh release upload latest Linux/*.so MacOS/*.so Windows/*.dll
+          git branch -f latest HEAD
+          git tag -f latest
+          git push -f origin refs/heads/latest
+          git push -f origin refs/tags/latest
+        fi
+        gh release upload continuous Linux/*.so MacOS/*.so Windows/*.dll
+        git tag -f continuous
+        git push -f origin refs/tags/continuous

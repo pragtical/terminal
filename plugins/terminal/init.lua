@@ -429,6 +429,7 @@ function TerminalView:draw()
       local offset = 0
       local foreground, background, text_style
       for i = 1, #line, 2 do
+        line[i] = math.tointeger(line[i])
         background = self:convert_color(bit.band(line[i], 0xFFFFFFFF), "background")
         foreground, text_style = self:convert_color(bit.rshift(line[i], 32), "foreground", self.options.bold_text_in_bright_colors)
 
