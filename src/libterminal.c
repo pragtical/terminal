@@ -30,6 +30,7 @@
 #include <string.h>
 #include <math.h>
 #include <sys/stat.h>
+#include <inttypes.h>
 
 #ifdef LIBTERMINAL_STANDALONE
   #include <lua.h>
@@ -189,7 +190,7 @@ typedef struct {
   view_e current_view;
   view_t views[VIEW_MAX];                            // Normally just two buffers, normal, and alternate.
   paste_mode_e paste_mode;
-  mode_e mode;                                       // The mode the terminal is in. 
+  mode_e mode;                                       // The mode the terminal is in.
   int reporting_focus;                               // Enables/disbles reporting focus.
   char name[LIBTERMINAL_NAME_MAX];                   // Window name, set with OS command.
   char buffered_sequence[LIBTERMINAL_CHUNK_SIZE];
@@ -1259,7 +1260,9 @@ static void output_line(lua_State* L, buffer_char_t* start, buffer_char_t* end, 
         ((uint64_t)style.background.g << 8) |
         ((uint64_t)style.background.b << 0)
       );
-      lua_pushinteger(L, packed);
+      char hex_string[24];
+      sprintf(hex_string, "%" PRIu64, packed);
+      lua_pushstring(L, hex_string);
       lua_rawseti(L, -2, ++group);
       lua_pushlstring(L, text_buffer, last_nonzero_codepoint);
       if (!overflows && start >= end) {
@@ -1404,7 +1407,7 @@ static int f_terminal_new(lua_State* L) {
     }
   #else
     luaL_checktype(L, 7, LUA_TTABLE);
-    lua_pushnil(L); 
+    lua_pushnil(L);
     int i = 0;
     while (lua_next(L, 7) != 0 && i < 255) {
       environment[i] = strdup(lua_tostring(L, -2));
