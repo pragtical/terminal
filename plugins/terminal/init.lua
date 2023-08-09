@@ -210,8 +210,8 @@ function TerminalView:set_target_size(axis, value)
 end
 
 function TerminalView:convert_color(int, target, should_bright)
-  local attributes = int >> 24
-  local type = (attributes & 0x7)
+  local attributes = bit.rshift(int, 24)
+  local type = bit.band(attributes, 0x7)
   if type == 0 then
     if target == "foreground" then return self.options.text, attributes end
     return self.options.background, attributes
@@ -219,11 +219,16 @@ function TerminalView:convert_color(int, target, should_bright)
     if target == "foreground" then return self.options.background, attributes end
     return self.options.text, attributes
   elseif type == 2 then
-    local index = (int >> 16) & 0xFF
-    if index < 8 and should_bright and (((attributes >> 3) & 0x1) ~= 0) then index = index + 8 end
-    return self.options.colors[index], attributes
+    local index = bit.band(bit.rshift(int, 16), 0xFF)
+    if index < 8 and should_bright and (bit.band(bit.rshift(attributes, 3), 0x1) ~= 0) then index = index + 8 end
+    return self.options.colors[tonumber(index)], attributes
   elseif type == 3 then
-    return { ((int >> 16) & 0xFF), ((int >> 8) & 0xFF), ((int >> 0) & 0xFF), 255 }, attributes
+    return {
+      tonumber(bit.band(bit.rshift(int, 16), 0xFF)),
+      tonumber(bit.band(bit.rshift(int, 8), 0xFF)),
+      tonumber(bit.band(bit.rshift(int, 0), 0xFF)),
+      255
+    }, attributes
   end
   return nil
 end
@@ -264,9 +269,10 @@ function TerminalView:draw()
       end
       local offset = 0
       for i = 1, #line, 2 do
-        local background = self:convert_color(line[i] & 0xFFFFFFFF, "background")
-        local foreground, style = self:convert_color(line[i] >> 32, "foreground", self.options.bold_text_in_bright_colors)
-        local font = (((style >> 3) & 0x1) ~= 0) and self.options.bold_font or self.options.font
+        line[i] = math.tointeger(line[i])
+        local background = self:convert_color(bit.band(line[i], 0xFFFFFFFF), "background")
+        local foreground, style = self:convert_color(bit.rshift(line[i], 32), "foreground", self.options.bold_text_in_bright_colors)
+        local font = (bit.band(bit.rshift(style, 3), 0x1) ~= 0) and self.options.bold_font or self.options.font
         local text = line[i+1]
         local length = text:ulen()
         local valid_utf8 = length ~= nil
@@ -619,6 +625,7 @@ end, {
 command.add(nil, {
   ["terminal:toggle-drawer"] = function()
     if not core.terminal_view then
+      system.chdir(core.root_project().path)
       core.terminal_view = TerminalView(config.plugins.terminal)
       core.root_view:get_active_node_default():split("down", core.terminal_view, { y = true }, true)
       core.set_active_view(core.terminal_view)
@@ -769,5 +776,3 @@ end
 return {
   class = TerminalView
 }
-
-
