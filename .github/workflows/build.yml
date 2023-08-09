@@ -1,7 +1,8 @@
 name: CI
 on: { push: { branches: [master] } }
 env:
-  LPM_PLUGINS: https://raw.githubusercontent.com/adamharrison/lite-xl-maintenance/latest/lpm-plugins/gh.lua
+  PPM_PLUGINS: https://raw.githubusercontent.com/adamharrison/lite-xl-maintenance/latest/lpm-plugins/gh.lua
+permissions: write-all
 jobs:
   version:
     runs-on: ubuntu-latest
@@ -15,14 +16,13 @@ jobs:
         id: setup_release
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: |
-          wget https://github.com/lite-xl/lite-xl-plugin-manager/releases/download/latest/lpm.x86_64-linux -O lpm-latest && chmod +x lpm-latest
-          echo "version=`./lpm-latest gh version`" >> $GITHUB_OUTPUT
+          wget https://github.com/pragtical/plugin-manager/releases/download/latest/ppm.x86_64-linux -O ppm-latest && chmod +x ppm-latest
+          echo "version=`./ppm-latest gh version`" >> $GITHUB_OUTPUT
   build_linux:
     needs: [version]
     permissions: write-all
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     defaults: { run: { shell: bash } }
-    container: ghcr.io/lite-xl/lite-xl-build-box:latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -85,8 +85,6 @@ jobs:
     - name: Perform Release
       env:
         GITHUB_TOKEN: "${{ github.token }}"
-        LPM_DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK }}"
       run: |
-        wget https://github.com/lite-xl/lite-xl-plugin-manager/releases/download/latest/lpm.x86_64-linux -O lpm-latest && chmod +x lpm-latest
-        ./lpm-latest gh release Linux/*.so MacOS/*.so Windows/*.dll
-
+        wget https://github.com/pragtical/plugin-manager/releases/download/latest/ppm.x86_64-linux -O ppm-latest && chmod +x ppm-latest
+        ./ppm-latest gh release Linux/*.so MacOS/*.so Windows/*.dll
