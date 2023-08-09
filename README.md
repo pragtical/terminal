@@ -1,30 +1,30 @@
-# lite-xl-terminal
+# pragtical-terminal
 
-`lite-xl-terminal` is a (mostly) fully-featured terminal emulator designed to slot into lite-xl as a plugin for windows (Windows 10+ only), mac and linux.
+`pragtical-terminal` is a (mostly) fully-featured terminal emulator designed to slot into pragtical as a plugin for windows (Windows 10+ only), mac and linux.
 
 ![image](https://github.com/adamharrison/lite-xl-terminal/assets/1034518/6b8003da-d4c1-4227-8fc9-3d2b1ae89bf2)
 
 
 ## Installation
 
-The easiest way to install `lite-xl-terminal` is to use [`lpm`](https://github.com/lite-xl/lite-xl-plugin-manager), and
+The easiest way to install `pragtical-terminal` is to use [`ppm`](https://github.com/pragtical/plugin-manager), and
 then run the following command:
 
 ```
-lpm add https://github.com/adamharrison/lite-xl-terminal.git && lpm install terminal
+ppm add https://github.com/pragtical/terminal.git && ppm install terminal
 ```
 
-If you want to simply try it out, you can use `lpm`'s `run` command:
+If you want to simply try it out, you can use `ppm`'s `run` command:
 
 ```
-lpm run https://github.com/adamharrison/lite-xl-terminal.git terminal
+ppm run https://github.com/pragtical/terminal.git terminal
 ```
 
 If you want to grab it directly, and build it from the repo, you can do:
 
 ```
-git clone --depth=1 https://github.com/adamharrison/lite-xl-terminal.git --recurse-submodules --shallow-submodules
-  cd lite-xl-terminal && ./build.sh && cp -R plugins/terminal ~/.config/lite-xl/plugins && cp libterminal.so ~/.config/lite-xl/plugins/terminal
+git clone --depth=1 https://github.com/pragtical/terminal.git --recurse-submodules --shallow-submodules
+  cd terminal && ./build.sh && cp -R plugins/terminal ~/.config/pragtical/plugins && cp libterminal.so ~/.config/pragtical/plugins/terminal
 ```
 
 Until we're released.
