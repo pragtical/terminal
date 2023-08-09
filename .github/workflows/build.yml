@@ -1,7 +1,7 @@
 name: CI
 on: { push: { branches: [master] } }
-env:
-  LPM_PLUGINS: https://raw.githubusercontent.com/adamharrison/lite-xl-maintenance/latest/lpm-plugins/gh.lua
+permissions: write-all
+
 jobs:
   version:
     runs-on: ubuntu-latest
@@ -9,28 +9,44 @@ jobs:
       version: ${{ steps.setup_release.outputs.version }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - name: Setup Release
         id: setup_release
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: |
-          wget https://github.com/lite-xl/lite-xl-plugin-manager/releases/download/latest/lpm.x86_64-linux -O lpm-latest && chmod +x lpm-latest
-          echo "version=`./lpm-latest gh version`" >> $GITHUB_OUTPUT
+          export VERSION=`git describe --tags --match "v*" | tail -c +2`
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building terminal version $VERSION."
+          perl -pe 'last if $_ =~ m/^\s*#/ && $_ !~ m/#\s*$ENV{VERSION}/' < CHANGELOG.md | tail -n +2 > NOTES.md
+          if [[ `git tag --points-at HEAD | head -c 1` == "v" ]]; then
+            gh release delete -y v$VERSION || true; gh release create -t v$VERSION v$VERSION
+            gh release delete -y latest || true; gh release create -t latest latest
+          fi
+          gh release delete -y continuous || true; gh release create -p -t 'Continuous Release' continuous -F NOTES.md
+
   build_linux:
     needs: [version]
     permissions: write-all
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     defaults: { run: { shell: bash } }
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with: { fetch-depth: 0, submodules: true }
+      - name: Install Cross Compiler
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build Linux
-        run: docker run -v .:/terminal ubuntu:14.04 bash -c 'cd /terminal && apt-get update && apt-get install -y gcc-4.8 gcc-4.8-aarch64-linux-gnu && BIN=libterminal.aarch64-linux.so CC=aarch64-linux-gnu-gcc-4.8 ./build.sh -O3 -std=c99 -D_BSD_SOURCE -D_POSIX_SOURCE -DLIBTERMINAL_VERSION=\"${{ needs.version.outputs.version }}-aarch64-linux\" && CC=gcc-4.8 BIN=libterminal.x86_64-linux.so ./build.sh -std=c99 -D_BSD_SOURCE -D_POSIX_SOURCE -O3 -DLIBTERMINAL_VERSION=\"${{ needs.version.outputs.version }}-x86_64-linux\" '
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
-        with: { name: "Linux", path: "*.so" }
+        run: |
+          BIN=libterminal.x86_64-linux.so ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-linux'"'
+          BIN=libterminal.aarch64-linux.so CC=aarch64-linux-gnu-gcc ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-aarch64-linux'"'
+      - name: Upload x86_64 Artifacts
+        uses: actions/upload-artifact@v4
+        with: { name: "Linux_x86_64", path: "libterminal.x86_64-linux.so" }
+      - name: Upload aarch64 Artifacts
+        uses: actions/upload-artifact@v4
+        with: { name: "Linux_aarch64", path: "libterminal.aarch64-linux.so" }
 
   build_windows:
     needs: [version]
@@ -39,33 +55,36 @@ jobs:
     defaults: { run: { shell: bash } }
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with: { fetch-depth: 0, submodules: true }
       - name: Build Windows
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: sudo apt-get install mingw-w64 && BIN=libterminal.x86_64-windows.dll CC=x86_64-w64-mingw32-gcc ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-windows'"'
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
-        with: { name: "Windows", path: "*.dll" }
+        uses: actions/upload-artifact@v4
+        with: { name: "Windows", path: "libterminal.x86_64-windows.dll" }
 
   build_macos:
     needs: [version]
-    runs-on: macos-latest
+    runs-on: macos-13
     env:
       CC: clang
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with: { fetch-depth: 0, submodules: true }
       - name: Build MacOS
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: |
           ./build.sh clean
-          BIN=libterminal.x86_64-darwin.so ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-darwin'"'
-          BIN=libterminal.aarch64-darwin.so CC=clang CFLAGS="-arch arm64" ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-darwin'"'
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v3
-        with: { name: "MacOS", path: "*.so" }
+          BIN=libterminal.x86_64-darwin.so MACOSX_DEPLOYMENT_TARGET=10.11 ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-darwin'"'
+          BIN=libterminal.aarch64-darwin.so MACOSX_DEPLOYMENT_TARGET=11.0 CC=clang CFLAGS="-arch arm64" ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-darwin'"'
+      - name: Upload x86_64 Artifacts
+        uses: actions/upload-artifact@v4
+        with: { name: "MacOS_x86_64", path: "libterminal.x86_64-darwin.so" }
+      - name: Upload aarch64 Artifacts
+        uses: actions/upload-artifact@v4
+        with: { name: "MacOS_aarch64", path: "libterminal.aarch64-darwin.so" }
 
 
   finalize:
@@ -74,16 +93,23 @@ jobs:
     environment: Release
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with: { fetch-depth: 0 }
     - name: Download Artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with: { path: "." }
     - name: Perform Release
       env:
         GITHUB_TOKEN: "${{ github.token }}"
-        LPM_DISCORD_WEBHOOK: "${{ secrets.DISCORD_WEBHOOK }}"
       run: |
-        wget https://github.com/lite-xl/lite-xl-plugin-manager/releases/download/latest/lpm.x86_64-linux -O lpm-latest && chmod +x lpm-latest
-        ./lpm-latest gh release Linux/*.so MacOS/*.so Windows/*.dll
-
+        if [[ `git tag --points-at HEAD | head -c 1` == "v" ]]; then
+          gh release upload v${{ needs.version.outputs.version }} Linux_x86_64/*.so Linux_aarch64/*.so MacOS_x86_64/*.so MacOS_aarch64/*.so Windows/*.dll
+          gh release upload latest Linux_x86_64/*.so Linux_aarch64/*.so MacOS_x86_64/*.so MacOS_aarch64/*.so Windows/*.dll
+          git branch -f latest HEAD
+          git tag -f latest
+          git push -f origin refs/heads/latest
+          git push -f origin refs/tags/latest
+        fi
+        gh release upload continuous Linux_x86_64/*.so Linux_aarch64/*.so MacOS_x86_64/*.so MacOS_aarch64/*.so Windows/*.dll
+        git tag -f continuous
+        git push -f origin refs/tags/continuous
