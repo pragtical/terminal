@@ -117,52 +117,80 @@ default_config.config_spec = set_config_default_values {
   {
     label = "Font",
     description = "The font to use for the terminal.",
-    path = "font", type = "FONT"
+    path = "font", type = "FONT",
+    default = {
+      fonts = {
+        {
+          name = "JetBrains Mono Regular",
+          path = DATADIR .. "/fonts/JetBrainsMono-Regular.ttf"
+        }
+      },
+      options = {
+        size = 15,
+        antialiasing = "subpixel",
+        hinting = "slight"
+      }
+    },
+    on_apply = function()
+      if not config.plugins.terminal.bold_font then
+        config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
+          config.plugins.terminal.font:get_size(), { smoothing = true }
+        )
+      end
+    end
   },
   {
     label = "Background Color",
     description = "The color of the terminal background (when not overridden by the shell).",
-    path = "background", type = "COLOR"
+    path = "background", type = "COLOR",
+    default = style.background or { common.color "#000000" }
   },
   {
     label = "Text Color",
     description = "The color of the text (when not overridden by the shell).",
-    path = "text", type = "COLOR"
+    path = "text", type = "COLOR",
+    default = style.syntax and style.syntax.normal or { common.color "#FFFFFF" }
   },
   {
     label = "Show Bold Text In Bright Colors",
     description = "Display emboldened text with brighter colors.",
-    path = "bold_text_in_bright_colors", type = "TOGGLE"
+    path = "bold_text_in_bright_colors", type = "TOGGLE",
+    default = true
   },
   {
     label = "Minimum Contrast Ratio",
     description = "Minimum contrast between the text and background color (set to 0 to disable auto color adjustment).",
-    path = "minimum_contrast_ratio", type = "NUMBER"
+    path = "minimum_contrast_ratio", type = "NUMBER",
+    default = 3
   },
   {
     label = "Terminal Drawer Height",
     description = "Height of the terminal drawer (in pixels).",
-    path = "drawer_height", type = "NUMBER"
+    path = "drawer_height", type = "NUMBER",
+    default = 300
   },
   {
     label = "Inversion Key",
-    description = "The key to press in combination with CTRL to send the shortcut to Lite XL instead of the terminal.",
+    description = "The key to press in combination with CTRL to send the shortcut to Pragtical instead of the terminal.",
     path = "inversion_key", type = "STRING",
+    default = "shift"
   },
   {
     label = "Omit Shortcuts",
-    description = "A Lua pattern of shortcuts to pass to Lite XL instead of the terminal.",
+    description = "A Lua pattern of shortcuts to pass to Pragtical instead of the terminal.",
     path = "omit_escapes", type = "STRING"
   },
   {
     label = "Scrolling speed",
     description = "The amount of time to scroll a line when selecting text offscreen.",
-    path = "scrolling_speed", type = "NUMBER"
+    path = "scrolling_speed", type = "NUMBER",
+    default = 0.01
   },
   {
     label = "Shell",
     description = "Absolute path to the shell for the terminal.",
-    path = "shell", type = "STRING"
+    path = "shell", type = "FILE", exists=true,
+    default = default_shell
   },
   {
     label = "Shell Arguments",
@@ -172,17 +200,19 @@ default_config.config_spec = set_config_default_values {
   {
     label = "Terminal Type",
     description = "The type to terminal to appear as (sets the $TERM environment variable).",
-    path = "term", type = "STRING"
+    path = "term", type = "STRING",
+    default = "xterm-256color"
   },
   {
     label = "Scrollback Buffer Size",
     description = "Number of lines to store for scrolling in the terminal.",
-    path = "scrollback_limit", type = "NUMBER"
+    path = "scrollback_limit", type = "NUMBER",
+    default = 10000
   },
   {
     label = "Change Other Options",
     description = "For other options such as the color palette, you can change them in the user module.",
-    icon = "PLATFORM", type = "BUTTON", on_click = "core:open-user-module", path = "",
+    icon = "P", type = "BUTTON", on_click = "core:open-user-module", path = ""
   }
 }
 config.plugins.terminal = common.merge(default_config, config.plugins.terminal)
@@ -278,6 +308,7 @@ function TerminalView:new(options)
   self.focused = false
   self.modified_since_last_focus = false
 end
+
 
 function TerminalView:shift_selection_update()
   local shifts = self.terminal:update()
@@ -379,8 +410,8 @@ function TerminalView:set_target_size(axis, value)
 end
 
 function TerminalView:convert_color(int, target, should_bright)
-  local attributes = int >> 24
-  local type = (attributes & 0x7)
+  local attributes = bit.rshift(int, 24)
+  local type = bit.band(attributes, 0x7)
   if type == 0 then
     if target == "foreground" then return self.options.text, attributes end
     return self.options.background, attributes
@@ -388,11 +419,16 @@ function TerminalView:convert_color(int, target, should_bright)
     if target == "foreground" then return self.options.background, attributes end
     return self.options.text, attributes
   elseif type == 2 then
-    local index = (int >> 16) & 0xFF
-    if index < 8 and should_bright and (((attributes >> 3) & 0x1) ~= 0) then index = index + 8 end
-    return self.options.colors[index], attributes
+    local index = bit.band(bit.rshift(int, 16), 0xFF)
+    if index < 8 and should_bright and (bit.band(bit.rshift(attributes, 3), 0x1) ~= 0) then index = index + 8 end
+    return self.options.colors[tonumber(index)], attributes
   elseif type == 3 then
-    return { ((int >> 16) & 0xFF), ((int >> 8) & 0xFF), ((int >> 0) & 0xFF), 255 }, attributes
+    return {
+      tonumber(bit.band(bit.rshift(int, 16), 0xFF)),
+      tonumber(bit.band(bit.rshift(int, 8), 0xFF)),
+      tonumber(bit.band(bit.rshift(int, 0), 0xFF)),
+      255
+    }, attributes
   end
   return nil
 end
@@ -436,8 +472,9 @@ function TerminalView:draw()
       local offset = 0
       local foreground, background, text_style
       for i = 1, #line, 2 do
-        background = self:convert_color(line[i] & 0xFFFFFFFF, "background")
-        foreground, text_style = self:convert_color(line[i] >> 32, "foreground", self.options.bold_text_in_bright_colors)
+        line[i] = math.tointeger(line[i])
+        background = self:convert_color(bit.band(line[i], 0xFFFFFFFF), "background")
+        foreground, text_style = self:convert_color(bit.rshift(line[i], 32), "foreground", self.options.bold_text_in_bright_colors)
 
         if config.plugins.terminal.minimum_contrast_ratio > 0 then
           if not contrast_foreground[line[i]] then
@@ -445,8 +482,8 @@ function TerminalView:draw()
           end
           foreground = contrast_foreground[line[i]]
         end
-        
-        local font = (((text_style >> 3) & 0x1) ~= 0) and self.options.bold_font or self.options.font
+
+        local font = (bit.band(bit.rshift(text_style, 3), 0x1) ~= 0) and self.options.bold_font or self.options.font
         local text = line[i+1]
         local length = text:ulen()
         local valid_utf8 = length ~= nil
@@ -858,7 +895,7 @@ command.add(nil, {
     local open_drawer = function(text)
       if not core.terminal_view then command.perform("terminal:toggle-drawer") end
       local target_view = core.active_view:is(TerminalView) and core.active_view or core.terminal_view
-      target_view:input(text .. target_view.options.newline) 
+      target_view:input(text .. target_view.options.newline)
     end
     if not text then
       core.command_view:enter("Execute Command", { submit = open_drawer })
@@ -1005,5 +1042,3 @@ end
 return {
   class = TerminalView
 }
-
-
