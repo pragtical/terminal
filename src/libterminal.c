@@ -1259,7 +1259,9 @@ static void output_line(lua_State* L, buffer_char_t* start, buffer_char_t* end, 
         ((uint64_t)style.background.g << 8) |
         ((uint64_t)style.background.b << 0)
       );
-      lua_pushinteger(L, packed);
+      char hex_string[24];
+      sprintf(hex_string, "%lu", packed);
+      lua_pushstring(L, hex_string);
       lua_rawseti(L, -2, ++group);
       lua_pushlstring(L, text_buffer, last_nonzero_codepoint);
       if (!overflows && start >= end) {
