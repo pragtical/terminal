@@ -106,6 +106,79 @@ config.plugins.terminal = common.merge({
     [245] = { common.color "#8a8a8a" }, [246] = { common.color "#949494" }, [247] = { common.color "#9e9e9e" }, [248] = { common.color "#a8a8a8" }, [249] = { common.color "#b2b2b2" },
     [250] = { common.color "#bcbcbc" }, [251] = { common.color "#c6c6c6" }, [252] = { common.color "#d0d0d0" }, [253] = { common.color "#dadada" }, [254] = { common.color "#e4e4e4" },
     [255] = { common.color "#eeeeee" }
+  },
+  config_spec = {
+    name = "Terminal",
+    {
+      label = "Shell",
+      description = "Path to the shell binary.",
+      path = "shell",
+      type = "file",
+      exists = true,
+      default = default_shell
+    },
+    {
+      label = "Drawer Height",
+      description = "Default height of the console drawer.",
+      path = "drawer_height",
+      type = "number",
+      default = 300,
+      min = 10
+    },
+    {
+      label = "Scrollback Limit",
+      description = "Amount of lines you can emit before we start cutting them off.",
+      path = "scrollback_limit",
+      type = "number",
+      default = 10000
+    },
+    {
+      label = "Background Color",
+      description = "Default background color if not explicitly set by the shell.",
+      path = "background",
+      type = "color",
+      default = { common.color "#000000" },
+    },
+    {
+      label = "Foreground Color",
+      description = "Default foreground color if not explicitly set by the shell.",
+      path = "text",
+      type = "color",
+      default = { common.color "#FFFFFF" },
+    },
+    {
+      label = "Font",
+      description = "The font and fallbacks used on the terminal.",
+      path = "font",
+      type = "font",
+      default = {
+        fonts = {
+          {
+            name = "JetBrains Mono Regular",
+            path = DATADIR .. "/fonts/JetBrainsMono-Regular.ttf"
+          }
+        },
+        options = {
+          size = 15,
+          antialiasing = "subpixel",
+          hinting = "slight"
+        }
+      }
+    },
+    {
+      label = "Bold Text in Bright Colors",
+      description = "Whether to use bright colors for bold text.",
+      path = "bold_text_in_bright_colors",
+      type = "toggle",
+      default = true
+    },
+    {
+      label = "Debug",
+      description = "Outputs a terminal.log file of all the output of your shell.",
+      path = "debug",
+      type = "toggle",
+      default = false
+    }
   }
 }, config.plugins.terminal)
 if not config.plugins.terminal.bold_font then config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(style.code_font:get_size(), { smoothing = true }) end
@@ -219,8 +292,8 @@ function TerminalView:set_target_size(axis, value)
 end
 
 function TerminalView:convert_color(int, target, should_bright)
-  local attributes = int >> 24
-  local type = (attributes & 0x7)
+  local attributes = bit.rshift(int, 24)
+  local type = bit.band(attributes, 0x7)
   if type == 0 then
     if target == "foreground" then return self.options.text, attributes end
     return self.options.background, attributes
@@ -228,11 +301,16 @@ function TerminalView:convert_color(int, target, should_bright)
     if target == "foreground" then return self.options.background, attributes end
     return self.options.text, attributes
   elseif type == 2 then
-    local index = (int >> 16) & 0xFF
-    if index < 8 and should_bright and (((attributes >> 3) & 0x1) ~= 0) then index = index + 8 end
-    return self.options.colors[index], attributes
+    local index = bit.band(bit.rshift(int, 16), 0xFF)
+    if index < 8 and should_bright and (bit.band(bit.rshift(attributes, 3), 0x1) ~= 0) then index = index + 8 end
+    return self.options.colors[tonumber(index)], attributes
   elseif type == 3 then
-    return { ((int >> 16) & 0xFF), ((int >> 8) & 0xFF), ((int >> 0) & 0xFF), 255 }, attributes
+    return {
+      tonumber(bit.band(bit.rshift(int, 16), 0xFF)),
+      tonumber(bit.band(bit.rshift(int, 8), 0xFF)),
+      tonumber(bit.band(bit.rshift(int, 0), 0xFF)),
+      255
+    }, attributes
   end
   return nil
 end
@@ -274,9 +352,10 @@ function TerminalView:draw()
       local offset = 0
       local foreground, background, text_style
       for i = 1, #line, 2 do
-        background = self:convert_color(line[i] & 0xFFFFFFFF, "background")
-        foreground, text_style = self:convert_color(line[i] >> 32, "foreground", self.options.bold_text_in_bright_colors)
-        local font = (((text_style >> 3) & 0x1) ~= 0) and self.options.bold_font or self.options.font
+        line[i] = math.tointeger(line[i])
+        background = self:convert_color(bit.band(line[i], 0xFFFFFFFF), "background")
+        foreground, text_style = self:convert_color(bit.rshift(line[i], 32), "foreground", self.options.bold_text_in_bright_colors)
+        local font = (bit.band(bit.rshift(text_style, 3), 0x1) ~= 0) and self.options.bold_font or self.options.font
         local text = line[i+1]
         local length = text:ulen()
         local valid_utf8 = length ~= nil
@@ -652,6 +731,7 @@ end, {
 command.add(nil, {
   ["terminal:toggle-drawer"] = function()
     if not core.terminal_view then
+      system.chdir(core.root_project().path)
       core.terminal_view = TerminalView(config.plugins.terminal)
       core.root_view:get_active_node_default():split("down", core.terminal_view, { y = true }, true)
       core.set_active_view(core.terminal_view)
@@ -802,5 +882,3 @@ end
 return {
   class = TerminalView
 }
-
-

@@ -25,7 +25,7 @@ jobs:
       - name: Create Release(s)
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: |
-          if [[ `git tag --points-at HEAD | head -c 1` == "v" ]]; then
+          if git tag --points-at HEAD | tail -n1 | grep "^v"; then
             gh release delete -y v$VERSION || true;
             gh release create -t v$VERSION v$VERSION *.so *.dll
             gh release delete -y latest || true;
@@ -34,6 +34,7 @@ jobs:
           gh release delete -y continuous || true; gh release create -p -t 'Continuous Release' continuous *.so *.dll
 
   build_macos:
+    permissions: write-all
     needs: build_linux_windows
     runs-on: macos-11
     env:
@@ -53,7 +54,7 @@ jobs:
           BIN=libterminal.x86_64-darwin.so ./build.sh -O3 -DLIBTERMINAL_VERSION='"'$VERSION-x86_64-darwin'"'
           BIN=libterminal.aarch64-darwin.so CC=clang CFLAGS="-arch arm64" ./build.sh -O3 -DLIBTERMINAL_VERSION='"'$VERSION-x86_64-darwin'"'
           gh release upload continuous *.so
-          if [[ `git tag --points-at HEAD | head -c 1` == "v" ]]; then
+          if git tag --points-at HEAD | tail -n1 | grep "^v"; then
             gh release upload v$VERSION *.so
             gh release upload latest *.so
             git branch -f latest HEAD
