@@ -330,9 +330,27 @@ function TerminalView:spawn()
   local weak_table = { self = self }
   setmetatable(weak_table, { __mode = "v" })
   self.routine = self.routine or core.add_thread(function()
+    local count = 0
     while weak_table.self and weak_table.self.terminal do
-      core.redraw = weak_table.self:shift_selection_update() or core.redraw
-      coroutine.yield(1 / config.fps)
+      -- do not redraw when hidden
+      if self.size.y > 0 then
+        core.redraw = weak_table.self:shift_selection_update() or core.redraw
+        coroutine.yield(0.005) -- it may be competing with others so...
+      else
+        coroutine.yield(1)
+      end
+      -- make sure to exit if no longer part of the root view
+      if count >= 500 then
+        local found = false
+        local views = core.root_view.root_node:get_children()
+        for _, view in ipairs(views) do
+          if view == self then found = true break end
+        end
+        if not found then break end
+        count = 0
+      else
+        count = count + 1
+      end
     end
   end)
 end
@@ -892,7 +910,7 @@ local function toggle_drawer(swap)
     else
       core.terminal_view_closed = core.terminal_view.size.y
       core.terminal_view_node:resize("y", 0)
-      core.set_active_view(core.last_active_view)
+      if core.last_active_view then core.set_active_view(core.last_active_view) end
     end
   else
     core.set_active_view(core.active_view == core.terminal_view and core.last_active_view or core.terminal_view)
