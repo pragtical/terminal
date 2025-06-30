@@ -338,10 +338,37 @@ function TerminalView:spawn()
   -- We make this weak so that any other method of closing the view gets caught up in the garbage collection and the coroutine doesn't count as a reference for gc purposes.
   local weak_table = { self = self }
   setmetatable(weak_table, { __mode = "v" })
-  self.routine = self.routine or core.add_thread(function()
+  self.routine = self.routine or core.add_background_thread(function()
+    local count = 0
     while weak_table.self and weak_table.self.terminal do
-      core.redraw = weak_table.self:shift_selection_update() or core.redraw
-      coroutine.yield(1 / config.fps)
+      -- do not redraw when hidden
+      if weak_table.self.size.y > 0 then
+        core.redraw = weak_table.self:shift_selection_update() or core.redraw
+        if core.active_view == self and not core.redraw then
+          core.redraw = true
+          coroutine.yield(0.5)
+        else
+          coroutine.yield(1/30)
+        end
+      else
+        if weak_table.self:shift_selection_update() then
+          weak_table.self:update()
+          weak_table.self:draw()
+        end
+        coroutine.yield(1)
+      end
+      -- make sure to exit if no longer part of the root view
+      if count >= 500 then
+        local found = false
+        local views = core.root_view.root_node:get_children()
+        for _, view in ipairs(views) do
+          if view == weak_table.self then found = true break end
+        end
+        if not found then break end
+        count = 0
+      else
+        count = count + 1
+      end
     end
   end)
 end
@@ -364,6 +391,7 @@ function TerminalView:update()
     end
   end
   if self.terminal then
+    core.redraw = self:shift_selection_update() or core.redraw
     if self.deferred_input then
       self:input(self.deferred_input)
       self.deferred_input = nil
@@ -461,7 +489,6 @@ function TerminalView:draw()
 
     local y = self.position.y + self.options.padding.y
     local lh = self.options.font:get_height()
-    core.redraw = self:shift_selection_update() or core.redraw
 
 
     local selection = self:sorted_selection()
@@ -901,7 +928,7 @@ local function toggle_drawer(swap)
     else
       core.terminal_view_closed = core.terminal_view.size.y
       core.terminal_view_node:resize("y", 0)
-      core.set_active_view(core.last_active_view)
+      if core.last_active_view then core.set_active_view(core.last_active_view) end
     end
   else
     core.set_active_view(core.active_view == core.terminal_view and core.last_active_view or core.terminal_view)
