@@ -189,7 +189,7 @@ typedef struct {
   view_e current_view;
   view_t views[VIEW_MAX];                            // Normally just two buffers, normal, and alternate.
   paste_mode_e paste_mode;
-  mode_e mode;                                       // The mode the terminal is in. 
+  mode_e mode;                                       // The mode the terminal is in.
   int reporting_focus;                               // Enables/disbles reporting focus.
   char name[LIBTERMINAL_NAME_MAX];                   // Window name, set with OS command.
   char buffered_sequence[LIBTERMINAL_CHUNK_SIZE];
@@ -1406,7 +1406,7 @@ static int f_terminal_new(lua_State* L) {
     }
   #else
     luaL_checktype(L, 7, LUA_TTABLE);
-    lua_pushnil(L); 
+    lua_pushnil(L);
     int i = 0;
     while (lua_next(L, 7) != 0 && i < 255) {
       environment[i] = strdup(lua_tostring(L, -2));
@@ -1415,7 +1415,7 @@ static int f_terminal_new(lua_State* L) {
       lua_pop(L, 1);
     }
   #endif
-  int debug = lua_toboolean(L, 7);
+  int debug = lua_toboolean(L, 8);
   terminal_t* terminal = terminal_new(x, y, scrollback_limit, term_env, path, (const char**)arguments, (const char**)environment);
   for (int i = 1; i < 256 && arguments[i]; ++i)
     free(arguments[i]);
