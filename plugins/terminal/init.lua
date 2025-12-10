@@ -353,7 +353,6 @@ function TerminalView:spawn()
       else
         if weak_table.self:shift_selection_update() then
           weak_table.self:update()
-          weak_table.self:draw()
         end
         coroutine.yield(1)
       end
