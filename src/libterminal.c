@@ -1178,7 +1178,7 @@ static terminal_t* terminal_new(int columns, int lines, int scrollback_limit, co
       InitializeProcThreadAttributeList(NULL, 2, 0, &list_size);
       si_ex.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(list_size);
       BOOL success = InitializeProcThreadAttributeList(si_ex.lpAttributeList, 2, 0, (PSIZE_T)&list_size) &&
-        UpdateProcThreadAttribute(si_ex.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, terminal->hpcon, sizeof(HPCON), NULL, NULL);
+        UpdateProcThreadAttribute(si_ex.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, terminal->hpcon, sizeof(HPCON), NULL, NULL) &&
         UpdateProcThreadAttribute(si_ex.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles_to_inherit, sizeof(handles_to_inherit), NULL, NULL);
       if (!success && set_error_step("update proc attribute list")) {
         DeleteProcThreadAttributeList(si_ex.lpAttributeList);
@@ -1333,25 +1333,6 @@ static int f_terminal_lines(lua_State* L) {
 
 
 #if _WIN32
-static LPCWSTR lua_tolutf16(lua_State* L, const char* str, size_t utf8len) {
-  if (str && str[0] == 0)
-    return L"";
-  int len = MultiByteToWideChar(CP_UTF8, 0, str, utf8len, NULL, 0);
-  if (len > 0) {
-    LPWSTR output = (LPWSTR) malloc(sizeof(WCHAR) * len);
-    if (output) {
-      len = MultiByteToWideChar(CP_UTF8, 0, str, -1, output, len);
-      if (len > 0) {
-        lua_pushlstring(L, (char*)output, len * 2);
-        free(output);
-        return (LPCWSTR)lua_tostring(L, -1);
-      }
-      free(output);
-    }
-  }
-  return NULL;
-}
-
 static const char* lua_toutf8(lua_State* L, LPCWSTR str) {
   int len = WideCharToMultiByte(CP_UTF8, 0, str, -1, NULL, 0, NULL, NULL);
   if (len > 0) {
@@ -1397,14 +1378,9 @@ static int f_terminal_new(lua_State* L) {
   #if _WIN32
     size_t envlen;
     const char* env = luaL_checklstring(L, 7, &envlen);
-    if (lua_tolutf16(L, env, envlen)) {
-      size_t utf16len;
-      const char* utf16 = lua_tolstring(L, -1, &utf16len);
-      utf16len += sizeof(wchar_t);
-      environment[0] = malloc(utf16len);
-      memcpy(environment[0], utf16, utf16len);
-      lua_pop(L, 1);
-    }
+    LPWSTR utf16_env = calloc(envlen, sizeof(WCHAR));
+    MultiByteToWideChar(CP_UTF8, 0, env, envlen, utf16_env, envlen);
+    environment[0] = (char*) utf16_env;
   #else
     luaL_checktype(L, 7, LUA_TTABLE);
     lua_pushnil(L);
@@ -1420,7 +1396,7 @@ static int f_terminal_new(lua_State* L) {
   terminal_t* terminal = terminal_new(x, y, scrollback_limit, term_env, path, (const char**)arguments, (const char**)environment);
   for (int i = 1; i < 256 && arguments[i]; ++i)
     free(arguments[i]);
-  for (int i = 1; i < 256 && environment[i]; ++i)
+  for (int i = 0; i < 256 && environment[i]; ++i)
     free(environment[i]);
   if (!terminal)
     return luaL_error(L, "error creating terminal: %s", terminal_get_last_error());
