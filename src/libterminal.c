@@ -1400,6 +1400,7 @@ static int f_terminal_new(lua_State* L) {
     if (lua_tolutf16(L, env, envlen)) {
       size_t utf16len;
       const char* utf16 = lua_tolstring(L, -1, &utf16len);
+      utf16len += sizeof(wchar_t);
       environment[0] = malloc(utf16len);
       memcpy(environment[0], utf16, utf16len);
       lua_pop(L, 1);
