@@ -37,8 +37,8 @@
   #include <lauxlib.h>
   #include <lualib.h>
 #else
-  #define LITE_XL_PLUGIN_ENTRYPOINT
-  #include <lite_xl_plugin_api.h>
+  #define PRAGTICAL_PLUGIN_ENTRYPOINT
+  #include <pragtical_plugin_api.h>
 #endif
 
 #ifndef min
@@ -1638,8 +1638,8 @@ static const luaL_Reg terminal_api[] = {
 #endif
 
 #ifndef LIBTERMINAL_STANDALONE
-int luaopen_lite_xl_libterminal(lua_State* L, void* XL) {
-  lite_xl_plugin_init(XL);
+int luaopen_pragtical_libterminal(lua_State* L, void* XL) {
+  pragtical_plugin_init(XL);
 #else
 int luaopen_libterminal(lua_State* L) {
 #endif

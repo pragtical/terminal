@@ -3,7 +3,7 @@
 : ${CC=gcc}
 : ${BIN=libterminal.so}
 
-CFLAGS="$CFLAGS -fPIC -Ilib/lite-xl/resources/include"
+CFLAGS="$CFLAGS -fPIC -Ilib/pragtical/resources/include"
 LDFLAGS=""
 
 [[ "$@" == "clean" ]] && rm -f *.so *.dll && exit 0
