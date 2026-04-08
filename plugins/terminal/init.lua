@@ -42,8 +42,8 @@ local default_config = {
   scrollback_limit = 10000,
   -- the default height of the console drawer
   drawer_height = 300,
-  -- the default console font. non-monsospace is unsupported
-  font = style.code_font,
+  -- Use a different font from the code editor
+  use_custom_font = false,
   -- padding around the edges of the terminal
   padding = { x = 0, y = 0 },
   -- default background color if not explicitly set by the shell
@@ -117,9 +117,15 @@ local function set_config_default_values(c) for _, v in ipairs(c) do if v.path t
 default_config.config_spec = set_config_default_values {
   name = "Terminal",
   {
+    label = "Use Custom Font",
+    description = "Use the configured custom font for the terminal (requires restart).",
+    path = "use_custom_font", type = "TOGGLE",
+    default = false
+  },
+  {
     label = "Font",
-    description = "The font to use for the terminal.",
-    path = "font", type = "FONT",
+    description = "A custom font to use for the terminal (requires restart).",
+    path = "font", type = "font",
     default = {
       fonts = {
         {
@@ -134,6 +140,9 @@ default_config.config_spec = set_config_default_values {
       }
     },
     on_apply = function()
+      if not config.plugins.terminal.use_custom_font then
+        config.plugins.terminal.font = style.code_font
+      end
       if not config.plugins.terminal.bold_font then
         config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
           config.plugins.terminal.font:get_size(), { smoothing = true }
@@ -218,7 +227,23 @@ default_config.config_spec = set_config_default_values {
   }
 }
 config.plugins.terminal = common.merge(default_config, config.plugins.terminal)
-if not config.plugins.terminal.bold_font then config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(style.code_font:get_size(), { smoothing = true }) end
+if not config.plugins.terminal.font or not config.plugins.terminal.use_custom_font then
+  core.add_thread(function()
+    if not config.plugins.terminal.font or not config.plugins.terminal.use_custom_font then
+      config.plugins.terminal.font = style.code_font
+    end
+  end)
+end
+if not config.plugins.terminal.bold_font then
+  core.add_thread(function()
+    while not config.plugins.terminal.font do coroutine.yield() end
+    if not config.plugins.terminal.bold_font then
+      config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
+        config.plugins.terminal.font:get_size(), { smoothing = true }
+      )
+    end
+  end)
+end
 
 -- contrast functions pulled from https://github.com/xtermjs/xterm.js/blob/99df13b085aecb051f1373c5b7f8e819c4f41442/src/common/Color.ts#L285.
 local function contrastRatio(l1, l2)
@@ -373,7 +398,22 @@ function TerminalView:spawn()
 end
 
 
+---Can be overriden by widgets to listen for scale change events to apply
+---any neccesary changes in sizes, padding, etc...
+---@param new_scale number
+---@param prev_scale number
+function TerminalView:on_scale_change(new_scale, prev_scale)
+  TerminalView.super.on_scale_change(self, new_scale, prev_scale)
+  if self.options.font ~= style.code_font then
+    self.options.font:set_size(
+      self.options.font:get_size() * (new_scale / prev_scale)
+    )
+  end
+end
+
+
 function TerminalView:update()
+  TerminalView.super.update(self)
   if self.last_font_size and self.last_font_size ~= self.options.font:get_size() then
     self.options.bold_font:set_size(self.options.font:get_size())
   end
