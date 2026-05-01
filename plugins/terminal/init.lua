@@ -10,7 +10,7 @@ local StatusView = require "core.statusview"
 
 local terminal_native = require "plugins.terminal.libterminal"
 
-
+local prev_scale = SCALE
 local default_shell =  os.getenv("SHELL") or (PLATFORM == "Windows" and os.getenv("COMSPEC")) or (PLATFORM == "Windows" and "c:\\windows\\system32\\cmd.exe" or "sh")
 local default_config = {
   -- outputs a terminal.log file of all the output of your shell
@@ -44,6 +44,14 @@ local default_config = {
   drawer_height = 300,
   -- Use a different font from the code editor
   use_custom_font = false,
+  -- the default console font. non-monospace is unsupported, fonts that
+  -- work great and provide mostly everything you need to properly render
+  -- things like btop:
+  -- * JuliaMono Regular - https://github.com/cormullion/juliamono
+  -- * MesloLGS NF Regular - https://github.com/romkatv/powerlevel10k-media
+  -- You should use both, Julia as main and MesloLGS as fallback.
+  font = style.code_font,
+  bold_font = style.code_font:copy(style.code_font:get_size(), { smoothing = true }),
   -- padding around the edges of the terminal
   padding = { x = 0, y = 0 },
   -- default background color if not explicitly set by the shell
@@ -124,7 +132,7 @@ default_config.config_spec = set_config_default_values {
   },
   {
     label = "Font",
-    description = "A custom font to use for the terminal (requires restart).",
+    description = "Custom font to use for the terminal (non-monospace unsupported, great choices are JuliaMono and MesloLGS NF) (requires restart).",
     path = "font", type = "font",
     default = {
       fonts = {
@@ -140,14 +148,13 @@ default_config.config_spec = set_config_default_values {
       }
     },
     on_apply = function()
+      prev_scale = SCALE
       if not config.plugins.terminal.use_custom_font then
         config.plugins.terminal.font = style.code_font
       end
-      if not config.plugins.terminal.bold_font then
-        config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-          config.plugins.terminal.font:get_size(), { smoothing = true }
-        )
-      end
+      config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
+        config.plugins.terminal.font:get_size(), { smoothing = true }
+      )
     end
   },
   {
@@ -227,23 +234,24 @@ default_config.config_spec = set_config_default_values {
   }
 }
 config.plugins.terminal = common.merge(default_config, config.plugins.terminal)
-if not config.plugins.terminal.font or not config.plugins.terminal.use_custom_font then
-  core.add_thread(function()
-    if not config.plugins.terminal.font or not config.plugins.terminal.use_custom_font then
-      config.plugins.terminal.font = style.code_font
-    end
-  end)
-end
-if not config.plugins.terminal.bold_font then
-  core.add_thread(function()
-    while not config.plugins.terminal.font do coroutine.yield() end
-    if not config.plugins.terminal.bold_font then
-      config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-        config.plugins.terminal.font:get_size(), { smoothing = true }
-      )
-    end
-  end)
-end
+
+core.add_thread(function()
+  -- give time for ui settings (even on editor restart) and then apply font
+  for _=1, 2 do coroutine.yield() end
+  if not config.plugins.terminal.use_custom_font then
+    config.plugins.terminal.font = style.code_font
+    config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
+      config.plugins.terminal.font:get_size(), { smoothing = true }
+    )
+  elseif prev_scale ~= SCALE then
+    config.plugins.terminal.font:set_size(
+      (config.plugins.terminal.font:get_size() / prev_scale) * SCALE
+    )
+    config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
+      config.plugins.terminal.font:get_size(), { smoothing = true }
+    )
+  end
+end)
 
 -- contrast functions pulled from https://github.com/xtermjs/xterm.js/blob/99df13b085aecb051f1373c5b7f8e819c4f41442/src/common/Color.ts#L285.
 local function contrastRatio(l1, l2)
@@ -630,6 +638,7 @@ function TerminalView:convert_coordinates(x, y)
 end
 
 function TerminalView:get_mouse_tracking()
+  if not self.terminal  then return end
   local mode = self.terminal:mouse_tracking_mode()
   if not mode then return nil end
   return mode, self.terminal:mouse_encoding()
