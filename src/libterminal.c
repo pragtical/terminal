@@ -139,8 +139,14 @@ typedef enum mouse_tracking_mode_e {
   MOUSE_TRACKING_NONE,
   MOUSE_TRACKING_X10,
   MOUSE_TRACKING_NORMAL,
-  MOUSE_TRACKING_SGR
+  MOUSE_TRACKING_BUTTON,
+  MOUSE_TRACKING_ANY
 } mouse_tracking_mode_e;
+
+typedef enum mouse_encoding_e {
+  MOUSE_ENCODING_DEFAULT,
+  MOUSE_ENCODING_SGR
+} mouse_encoding_e;
 
 typedef enum charset_e {
   CHARSET_US,
@@ -157,7 +163,6 @@ typedef struct view_t {
   cursor_mode_e cursor_mode;
   keys_mode_e cursor_keys_mode;
   keys_mode_e keypad_keys_mode;
-  mouse_tracking_mode_e mouse_tracking_mode;
   color_t palette[256];                // Custom palette as per the ^][4;#;rgb:24/04/3C command. The fuck?
   charset_e charset;
   int last_graphical_character; // for CSI b
@@ -190,6 +195,8 @@ typedef struct {
   view_e current_view;
   view_t views[VIEW_MAX];                            // Normally just two buffers, normal, and alternate.
   paste_mode_e paste_mode;
+  mouse_tracking_mode_e mouse_tracking_mode;
+  mouse_encoding_e mouse_encoding;
   mode_e mode;                                       // The mode the terminal is in.
   int reporting_focus;                               // Enables/disbles reporting focus.
   char name[LIBTERMINAL_NAME_MAX];                   // Window name, set with OS command.
@@ -512,11 +519,13 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
           while (next) {
             switch (parse_number(next, 0)) {
               case 1: view->cursor_keys_mode = KEYS_MODE_APPLICATION; break;
-              case 9: view->mouse_tracking_mode = MOUSE_TRACKING_X10; break;
+              case 9: terminal->mouse_tracking_mode = MOUSE_TRACKING_X10; break;
               case 12: view->cursor_mode = CURSOR_BLINKING; break;
               case 25: view->cursor_mode = CURSOR_SOLID; break;
-              case 1000: if (view->mouse_tracking_mode != MOUSE_TRACKING_SGR) view->mouse_tracking_mode = MOUSE_TRACKING_NORMAL; break;
-              case 1006: view->mouse_tracking_mode = MOUSE_TRACKING_SGR; break;
+              case 1000: terminal->mouse_tracking_mode = MOUSE_TRACKING_NORMAL; break;
+              case 1002: terminal->mouse_tracking_mode = MOUSE_TRACKING_BUTTON; break;
+              case 1003: terminal->mouse_tracking_mode = MOUSE_TRACKING_ANY; break;
+              case 1006: terminal->mouse_encoding = MOUSE_ENCODING_SGR; break;
               case 1004: terminal->reporting_focus = 1; break;
               case 1047: terminal_switch_buffer(terminal, VIEW_ALTERNATE_BUFFER); break;
               case 1049: terminal_switch_buffer(terminal, VIEW_ALTERNATE_BUFFER); break;
@@ -534,11 +543,15 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
           while (next) {
             switch (parse_number(next, 0)) {
               case 1: view->cursor_keys_mode = KEYS_MODE_NORMAL; break;
-              case 9: view->mouse_tracking_mode = MOUSE_TRACKING_NONE; break;
+              case 9:
+              case 1000:
+              case 1002:
+              case 1003:
+                terminal->mouse_tracking_mode = MOUSE_TRACKING_NONE;
+              break;
               case 12: view->cursor_mode = CURSOR_SOLID; break;
               case 25: view->cursor_mode = CURSOR_HIDDEN; break;
-              case 1000: view->mouse_tracking_mode = MOUSE_TRACKING_NONE; break;
-              case 1006: view->mouse_tracking_mode = MOUSE_TRACKING_NONE; break;
+              case 1006: terminal->mouse_encoding = MOUSE_ENCODING_DEFAULT; break;
               case 1004: terminal->reporting_focus = 0; break;
               case 1047: terminal_switch_buffer(terminal, VIEW_NORMAL_BUFFER); break;
               case 1049: terminal_switch_buffer(terminal, VIEW_NORMAL_BUFFER); break;
@@ -1576,11 +1589,21 @@ static int f_terminal_clear(lua_State* L) {
 
 static int f_terminal_mouse_tracking_mode(lua_State* L) {
   terminal_t* terminal = lua_toterminal(L, 1);
-  switch (terminal->views[terminal->current_view].mouse_tracking_mode) {
+  switch (terminal->mouse_tracking_mode) {
     case MOUSE_TRACKING_NONE: lua_pushnil(L); break;
     case MOUSE_TRACKING_X10: lua_pushliteral(L, "x10"); break;
     case MOUSE_TRACKING_NORMAL: lua_pushliteral(L, "normal"); break;
-    case MOUSE_TRACKING_SGR: lua_pushliteral(L, "sgr"); break;
+    case MOUSE_TRACKING_BUTTON: lua_pushliteral(L, "button"); break;
+    case MOUSE_TRACKING_ANY: lua_pushliteral(L, "any"); break;
+  }
+  return 1;
+}
+
+static int f_terminal_mouse_encoding(lua_State* L) {
+  terminal_t* terminal = lua_toterminal(L, 1);
+  switch (terminal->mouse_encoding) {
+    case MOUSE_ENCODING_DEFAULT: lua_pushliteral(L, "default"); break;
+    case MOUSE_ENCODING_SGR: lua_pushliteral(L, "sgr"); break;
   }
   return 1;
 }
@@ -1601,6 +1624,7 @@ static const luaL_Reg terminal_api[] = {
   { "cursor",              f_terminal_cursor                 },
   { "focused",             f_terminal_focused                },
   { "mouse_tracking_mode", f_terminal_mouse_tracking_mode    },
+  { "mouse_encoding",      f_terminal_mouse_encoding         },
   { "cursor_keys_mode",    f_terminal_cursor_keys_mode       },
   { "keypad_keys_mode",    f_terminal_keypad_keys_mode       },
   { "paste_mode",          f_terminal_paste_mode             },

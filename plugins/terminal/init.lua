@@ -341,6 +341,7 @@ function TerminalView:new(options)
   self.last_size = { x = self.size.x, y = self.size.y }
   self.focused = false
   self.modified_since_last_focus = false
+  self.mouse_buttons = {}
 end
 
 
@@ -628,6 +629,35 @@ function TerminalView:convert_coordinates(x, y)
   return math.max(0, col_exact), math.max(0, row), math.max(0, col_approx)
 end
 
+function TerminalView:get_mouse_tracking()
+  local mode = self.terminal:mouse_tracking_mode()
+  if not mode then return nil end
+  return mode, self.terminal:mouse_encoding()
+end
+
+function TerminalView:get_mouse_button_code(button)
+  if button == "left" then return 0 end
+  if button == "middle" then return 1 end
+  if button == "right" then return 2 end
+end
+
+function TerminalView:get_active_mouse_button_code()
+  for _, button in ipairs({ "left", "middle", "right" }) do
+    if self.mouse_buttons[button] then
+      return self:get_mouse_button_code(button)
+    end
+  end
+  return 3
+end
+
+function TerminalView:send_mouse_event(button_code, col, row, suffix, encoding)
+  if encoding == "sgr" then
+    self.terminal:input("\x1B[<" .. button_code .. ";" .. (col + 1) .. ";" .. (row + 1) .. suffix)
+  else
+    self.terminal:input("\x1B[M" .. string.char(32 + button_code) .. string.char(32 + col + 1) .. string.char(32 + row + 1))
+  end
+end
+
 function TerminalView:get_word_boundaries(col, row)
   for line_idx, line in ipairs(self.terminal:lines()) do
     if line_idx == row + 1 then
@@ -660,28 +690,29 @@ function TerminalView:on_mouse_pressed(button, x, y, clicks)
     end
     return true
   end
+  self.mouse_x = x
+  self.mouse_y = y
+  local col, row = self:convert_coordinates(x, y)
+  local inverted = config.plugins.terminal.inversion_key and keymap.modkeys[config.plugins.terminal.inversion_key]
+  local mouse_mode, mouse_encoding = self:get_mouse_tracking()
+  local button_code = self:get_mouse_button_code(button)
+  if not inverted and mouse_mode and button_code ~= nil then
+    self.mouse_buttons[button] = true
+    self:send_mouse_event(button_code, col, row, "M", mouse_encoding)
+    return true
+  end
   if button == "left" then
-    local col, row = self:convert_coordinates(x, y)
-    local inverted = config.plugins.terminal.inversion_key and keymap.modkeys[config.plugins.terminal.inversion_key]
-    if not inverted and self.terminal:mouse_tracking_mode() == "x10" then
-      self.terminal:input("\x1B[M" .. string.char(32) .. string.char(32 + col + 1) .. string.char(32 + row + 1) )
-    elseif not inverted and self.terminal:mouse_tracking_mode() == "normal" then
-      self.terminal:input("\x1B[M" .. string.char(32) .. string.char(32 + col + 1) .. string.char(32 + row + 1) )
-    elseif not inverted and self.terminal:mouse_tracking_mode() == "sgr" then
-      self.terminal:input("\x1B[<0;" .. (col+1) .. ";" .. (row+1) .. "M" )
-    else
-      if clicks % 4 == 1 then
-        self.selection = nil
-        self.pressing = true
-      elseif clicks % 4 == 2 then
-        self.word_selecting = { self:get_word_boundaries(col, row) }
-        self.selection = { table.unpack(self.word_selecting) }
-      elseif clicks % 4 == 3 then
-        local scrollback = self.terminal:scrollback()
-        row = row - scrollback
-        self.row_selecting = { 0, row, 0, row + 1 }
-        self.selection = { 0, row, 0, row + 1 }
-      end
+    if clicks % 4 == 1 then
+      self.selection = nil
+      self.pressing = true
+    elseif clicks % 4 == 2 then
+      self.word_selecting = { self:get_word_boundaries(col, row) }
+      self.selection = { table.unpack(self.word_selecting) }
+    elseif clicks % 4 == 3 then
+      local scrollback = self.terminal:scrollback()
+      row = row - scrollback
+      self.row_selecting = { 0, row, 0, row + 1 }
+      self.selection = { 0, row, 0, row + 1 }
     end
   end
 end
@@ -697,6 +728,16 @@ function TerminalView:on_mouse_moved(x, y, dx, dy)
   end
   self.mouse_x = x
   self.mouse_y = y
+  local inverted = config.plugins.terminal.inversion_key and keymap.modkeys[config.plugins.terminal.inversion_key]
+  local mouse_mode, mouse_encoding = self:get_mouse_tracking()
+  if not inverted and mouse_mode then
+    local button_code = self:get_active_mouse_button_code()
+    if mouse_mode == "any" or (mouse_mode == "button" and button_code ~= 3) then
+      local col, row = self:convert_coordinates(x, y)
+      self:send_mouse_event(button_code + 32, col, row, "M", mouse_encoding)
+      return true
+    end
+  end
   if self.pressing or self.word_selecting or self.row_selecting then
     if y < self.position.y then
       self.scrolling_offscreen = 1
@@ -739,17 +780,23 @@ end
 
 function TerminalView:on_mouse_released(button, x, y)
   self.v_scrollbar:on_mouse_released(button, x, y)
+  self.mouse_x = x
+  self.mouse_y = y
+  local col, row = self:convert_coordinates(x, y)
+  local inverted = config.plugins.terminal.inversion_key and keymap.modkeys[config.plugins.terminal.inversion_key]
+  local mouse_mode, mouse_encoding = self:get_mouse_tracking()
+  local button_code = self:get_mouse_button_code(button)
+  if button_code ~= nil and not inverted and mouse_mode and mouse_mode ~= "x10" then
+    self:send_mouse_event(3, col, row, "m", mouse_encoding)
+  end
+  if button_code ~= nil then
+    self.mouse_buttons[button] = nil
+  end
   if button == "left" then
     self.pressing = false
     self.word_selecting = nil
     self.row_selecting = nil
     self.scrolling_offscreen = nil
-    local col, row = self:convert_coordinates(x, y)
-    if self.terminal:mouse_tracking_mode() == "normal" then
-      self.terminal:input("\x1B[M" .. string.char(32 + 3) .. string.char(32 + col + 1) .. string.char(32 + row + 1) )
-    elseif self.terminal:mouse_tracking_mode() == "sgr" then
-      self.terminal:input("\x1B[<0;" .. (col+1) .. ";" .. (row+1) .. "m")
-    end
   end
 end
 
@@ -837,13 +884,10 @@ command.add(function(amount)
   return (view and view:is(TerminalView)), view, amount
 end, {
   ["terminal:scroll"] = function(view, amount)
-    if view.terminal:mouse_tracking_mode() then
-      local col, row = view:convert_coordinates(view.mouse_x, view.mouse_y)
-      if view.terminal:mouse_tracking_mode() == "normal" then
-        view.terminal:input("\x1B[M" .. string.char(amount > 0 and 64 or 65) .. string.char(32 + col + 1) .. string.char(32 + row + 1) )
-      elseif view.terminal:mouse_tracking_mode() == "sgr" then
-        view.terminal:input("\x1B[<" .. (amount > 0 and 64 or 65) .. ";" .. (col+1) .. ";" .. (row+1) .. "M" )
-      end
+    local mouse_mode, mouse_encoding = view:get_mouse_tracking()
+    if mouse_mode and mouse_mode ~= "x10" then
+      local col, row = view:convert_coordinates(view.mouse_x or view.position.x, view.mouse_y or view.position.y)
+      view:send_mouse_event(amount > 0 and 64 or 65, col, row, "M", mouse_encoding)
     else
       view.accumulated_scroll = (view.accumulated_scroll or 0) + (amount or 1)
       if math.abs(view.accumulated_scroll) >= 1 then
