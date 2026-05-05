@@ -368,7 +368,10 @@ end
 
 
 function TerminalView:spawn()
+  local cwd = system.getcwd()
+  system.chdir(core.root_project().path)
   self.terminal = terminal_native.new(self.columns, self.lines, self.options.scrollback_limit, self.options.term, self.options.shell, self.options.arguments, self.options.environment, self.options.debug)
+  system.chdir(cwd)
   -- We make this weak so that any other method of closing the view gets caught up in the garbage collection and the coroutine doesn't count as a reference for gc purposes.
   local weak_table = { self = self }
   setmetatable(weak_table, { __mode = "v" })
