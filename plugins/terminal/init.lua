@@ -208,7 +208,14 @@ default_config.config_spec = set_config_default_values {
     label = "Shell",
     description = "Absolute path to the shell for the terminal.",
     path = "shell", type = "FILE", exists=true,
-    default = default_shell
+    default = default_shell,
+    on_apply = function(shell)
+      if shell:lower():find("cmd.exe") then
+        config.plugins.terminal.newline = "\r\n"
+      else
+        config.plugins.terminal.newline = "\r"
+      end
+    end
   },
   {
     label = "Shell Arguments",

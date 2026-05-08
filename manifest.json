@@ -3,7 +3,7 @@
     {
       "id" : "terminal",
       "description" : "An integrated terminal for pragtical.",
-      "version" : "1.088",
+      "version" : "1.089",
       "path" : "plugins/terminal",
       "files" : [
         {
