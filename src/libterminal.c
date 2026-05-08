@@ -603,8 +603,12 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
               switch (display_number) {
                 case 0  : view->cursor_styling = LIBTERMINAL_NO_STYLING; view->cursor_styling_inversed = 0; break;
                 case 1  : view->cursor_styling.foreground.attributes |= ATTRIBUTE_BOLD; break;
+                case 2  : break;
                 case 3  : view->cursor_styling.foreground.attributes |= ATTRIBUTE_ITALIC; break;
                 case 4  : view->cursor_styling.foreground.attributes |= ATTRIBUTE_UNDERLINE; break;
+                case 22 : view->cursor_styling.foreground.attributes &= ~ATTRIBUTE_BOLD; break;
+                case 23 : view->cursor_styling.foreground.attributes &= ~ATTRIBUTE_ITALIC; break;
+                case 24 : view->cursor_styling.foreground.attributes &= ~ATTRIBUTE_UNDERLINE; break;
                 case 27:
                 case 7  : {
                   int is_inversed = display_number == 7;
@@ -1278,7 +1282,8 @@ static terminal_t* terminal_new(int columns, int lines, int scrollback_limit, co
       term.c_cflag |= CS8 | CREAD;
       term.c_iflag |= IUTF8 | ICRNL | IXON;
       term.c_oflag |= OPOST | ONLCR | NL0 | CR0 | TAB0 | BS0 | VT0 | FF0;
-      terminal->pid = forkpty(&terminal->master, NULL, &term, NULL);
+      struct winsize size = { .ws_row = lines, .ws_col = columns, .ws_xpixel = 0, .ws_ypixel = 0 };
+      terminal->pid = forkpty(&terminal->master, NULL, &term, &size);
       if (terminal->pid == -1 && set_error_step("forkpty")) {
         free(terminal);
         return NULL;
