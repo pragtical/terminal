@@ -321,6 +321,44 @@ static void terminal_clear_scrollback_buffer(terminal_t* terminal) {
   terminal->scrollback_total_lines = 0;
 }
 
+static void terminal_push_scrollback_line(terminal_t* terminal, const buffer_char_t* line, int overflow) {
+  if (terminal->scrollback_total_lines++ > terminal->scrollback_limit) {
+    backbuffer_page_t* page = terminal->scrollback_buffer_end;
+    if (page->next)
+      page->next->prev = NULL;
+    terminal->scrollback_buffer_end = page->next;
+    terminal->scrollback_total_lines -= page->line;
+    free(page);
+  }
+  if (!terminal->scrollback_buffer_start || terminal->scrollback_buffer_start->columns != terminal->columns || terminal->scrollback_buffer_start->line >= terminal->scrollback_buffer_start->lines) {
+    backbuffer_page_t* page = calloc(sizeof(backbuffer_page_t) + LIBTERMINAL_BACKBUFFER_PAGE_LINES*terminal->columns*sizeof(buffer_char_t) + sizeof(int)*LIBTERMINAL_BACKBUFFER_PAGE_LINES, 1);
+    if (!terminal->scrollback_buffer_start)
+      terminal->scrollback_buffer_end = page;
+    backbuffer_page_t* prev = terminal->scrollback_buffer_start;
+    page->prev = prev;
+    if (prev)
+      prev->next = page;
+    terminal->scrollback_buffer_start = page;
+    page->lines = LIBTERMINAL_BACKBUFFER_PAGE_LINES;
+    page->columns = terminal->columns;
+    page->line = 0;
+  }
+  memcpy(&terminal->scrollback_buffer_start->buffer[terminal->scrollback_buffer_start->line * terminal->columns], line, sizeof(buffer_char_t) * terminal->columns);
+  int* backbuffer_overflows = (int*)&terminal->scrollback_buffer_start->buffer[LIBTERMINAL_BACKBUFFER_PAGE_LINES*terminal->scrollback_buffer_start->columns];
+  backbuffer_overflows[terminal->scrollback_buffer_start->line] = overflow;
+  terminal->scrollback_buffer_start->line++;
+}
+
+static int terminal_line_is_empty(terminal_t* terminal, const buffer_char_t* line, int overflow) {
+  if (overflow)
+    return 0;
+  for (int i = 0; i < terminal->columns; ++i) {
+    if (line[i].codepoint && line[i].codepoint != ' ')
+      return 0;
+  }
+  return 1;
+}
+
 static void terminal_shift_buffer(terminal_t* terminal) {
   view_t* view = &terminal->views[terminal->current_view];
 
@@ -329,38 +367,18 @@ static void terminal_shift_buffer(terminal_t* terminal) {
     int start = min(view->scrolling_region_start, terminal->lines - 1);
     int start_plus_1 = min((view->scrolling_region_start + 1), terminal->lines - 1);
     int end = min(view->scrolling_region_end, terminal->lines);
-    if (start_plus_1 != start)
-      memmove(&view->buffer[terminal->columns * start], &view->buffer[terminal->columns * start_plus_1], sizeof(buffer_char_t) * terminal->columns * (end - start));
+    if (terminal->current_view == VIEW_NORMAL_BUFFER && !terminal_line_is_empty(terminal, &view->buffer[terminal->columns * start], view->overflows[start]))
+      terminal_push_scrollback_line(terminal, &view->buffer[terminal->columns * start], view->overflows[start]);
+    if (end > start_plus_1) {
+      memmove(&view->buffer[terminal->columns * start], &view->buffer[terminal->columns * start_plus_1], sizeof(buffer_char_t) * terminal->columns * (end - start - 1));
+      memmove(&view->overflows[start], &view->overflows[start_plus_1], sizeof(int) * (end - start - 1));
+    }
     memset(&view->buffer[terminal->columns * max(end - 1 , 0)], 0, sizeof(buffer_char_t) * terminal->columns);
+    view->overflows[max(end - 1, 0)] = 0;
     return;
   }
-  if (terminal->current_view == VIEW_NORMAL_BUFFER) {
-    if (terminal->scrollback_total_lines++ > terminal->scrollback_limit) {
-      backbuffer_page_t* page = terminal->scrollback_buffer_end;
-      if (page->next)
-        page->next->prev = NULL;
-      terminal->scrollback_buffer_end = page->next;
-      terminal->scrollback_total_lines -= page->line;
-      free(page);
-    }
-    if (!terminal->scrollback_buffer_start || terminal->scrollback_buffer_start->columns != terminal->columns || terminal->scrollback_buffer_start->line >= terminal->scrollback_buffer_start->lines) {
-      backbuffer_page_t* page = calloc(sizeof(backbuffer_page_t) + LIBTERMINAL_BACKBUFFER_PAGE_LINES*terminal->columns*sizeof(buffer_char_t) + sizeof(int)*LIBTERMINAL_BACKBUFFER_PAGE_LINES, 1);
-      if (!terminal->scrollback_buffer_start)
-        terminal->scrollback_buffer_end = page;
-      backbuffer_page_t* prev = terminal->scrollback_buffer_start;
-      page->prev = prev;
-      if (prev)
-        prev->next = page;
-      terminal->scrollback_buffer_start = page;
-      page->lines = LIBTERMINAL_BACKBUFFER_PAGE_LINES;
-      page->columns = terminal->columns;
-      page->line = 0;
-    }
-    memcpy(&terminal->scrollback_buffer_start->buffer[terminal->scrollback_buffer_start->line * terminal->columns], &view->buffer[0], sizeof(buffer_char_t) * terminal->columns);
-    int* backbuffer_overflows = (int*)&terminal->scrollback_buffer_start->buffer[LIBTERMINAL_BACKBUFFER_PAGE_LINES*terminal->scrollback_buffer_start->columns];
-    backbuffer_overflows[terminal->scrollback_buffer_start->line] = view->overflows[0];
-    terminal->scrollback_buffer_start->line++;
-  }
+  if (terminal->current_view == VIEW_NORMAL_BUFFER)
+    terminal_push_scrollback_line(terminal, &view->buffer[0], view->overflows[0]);
   memmove(&view->buffer[0], &view->buffer[terminal->columns], sizeof(buffer_char_t) * terminal->columns * (terminal->lines - 1));
   memmove(&view->overflows[0], &view->overflows[1], sizeof(int) * (terminal->lines - 1));
   memset(&view->buffer[terminal->columns * (terminal->lines - 1)], 0, sizeof(buffer_char_t) * terminal->columns);
@@ -740,9 +758,24 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
       case '=': view->keypad_keys_mode = KEYS_MODE_APPLICATION; break;
       case '>': view->keypad_keys_mode = KEYS_MODE_NORMAL; break;
       case 'M':
-        if (view->cursor_y == 0) {
+        if (view->scrolling_region_start != -1 && view->scrolling_region_end != -1) {
+          int start = min(view->scrolling_region_start, terminal->lines - 1);
+          int end = min(view->scrolling_region_end, terminal->lines);
+          if (view->cursor_y == start) {
+            if (end > start + 1) {
+              memmove(&view->buffer[terminal->columns * (start + 1)], &view->buffer[terminal->columns * start], sizeof(buffer_char_t) * terminal->columns * (end - start - 1));
+              memmove(&view->overflows[start + 1], &view->overflows[start], sizeof(int) * (end - start - 1));
+            }
+            memset(&view->buffer[terminal->columns * start], 0, sizeof(buffer_char_t) * terminal->columns);
+            view->overflows[start] = 0;
+          } else if (view->cursor_y > start) {
+            --view->cursor_y;
+          }
+        } else if (view->cursor_y == 0) {
           memmove(&view->buffer[terminal->columns], &view->buffer[0], sizeof(buffer_char_t)*terminal->columns*(terminal->lines-1));
+          memmove(&view->overflows[1], &view->overflows[0], sizeof(int) * (terminal->lines - 1));
           memset(&view->buffer[0], 0, sizeof(buffer_char_t)*terminal->columns);
+          view->overflows[0] = 0;
         } else {
           --view->cursor_y;
         }

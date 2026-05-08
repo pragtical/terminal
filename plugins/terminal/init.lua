@@ -903,8 +903,9 @@ command.add(function(amount)
   return (view and view:is(TerminalView)), view, amount
 end, {
   ["terminal:scroll"] = function(view, amount)
+    local inverted = config.plugins.terminal.inversion_key and keymap.modkeys[config.plugins.terminal.inversion_key]
     local mouse_mode, mouse_encoding = view:get_mouse_tracking()
-    if mouse_mode and mouse_mode ~= "x10" then
+    if not inverted and mouse_mode and mouse_mode ~= "x10" then
       local col, row = view:convert_coordinates(view.mouse_x or view.position.x, view.mouse_y or view.position.y)
       view:send_mouse_event(amount > 0 and 64 or 65, col, row, "M", mouse_encoding)
     else
