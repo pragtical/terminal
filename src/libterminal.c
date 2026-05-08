@@ -424,7 +424,7 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
       case 'C': view->cursor_x = min(view->cursor_x + max(parse_number(&seq[2], 1), 1), terminal->columns - 1); break;
       case 'D': view->cursor_x = max(view->cursor_x - max(parse_number(&seq[2], 1), 1), 0); break;
       case 'E': view->cursor_y = min(view->cursor_y + max(parse_number(&seq[2], 1), 1), terminal->lines - 1); view->cursor_x = 0; break;
-      case 'F': view->cursor_y = min(view->cursor_y - max(parse_number(&seq[2], 1), 1), 0); view->cursor_x = 0; break;
+      case 'F': view->cursor_y = max(view->cursor_y - max(parse_number(&seq[2], 1), 1), 0); view->cursor_x = 0; break;
       case 'G': view->cursor_x = min(max(max(parse_number(&seq[2], 1), 1) - 1, 0), terminal->columns - 1); break;
       case 'f':
       case 'H': {
@@ -672,7 +672,7 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
             } else
               view->cursor_styling.background = target_color;
           }
-          char* next = strchr(&seq[offset], ';');
+          const char* next = strchr(&seq[offset], ';');
           if (!next)
             break;
           offset = (next - seq) + 1;
@@ -862,6 +862,12 @@ static int terminal_output(terminal_t* terminal, const char* str, int len) {
   terminal_escape_type_e escape_type = parse_partial_sequence(terminal->buffered_sequence, buffered_sequence_index, &fixed_width);
   while (offset < len) {
     if (escape_type != ESCAPE_TYPE_NONE) {
+      if (buffered_sequence_index >= (int)sizeof(terminal->buffered_sequence) - 2) {
+        buffered_sequence_index = 0;
+        terminal->buffered_sequence[0] = 0;
+        escape_type = ESCAPE_TYPE_NONE;
+        continue;
+      }
       terminal->buffered_sequence[buffered_sequence_index++] = str[offset];
       escape_type = parse_partial_sequence(terminal->buffered_sequence, buffered_sequence_index, &fixed_width);
       if (
@@ -1009,7 +1015,7 @@ static int terminal_update(terminal_t* terminal, void (*callback)(char*, int, vo
     if (terminal->nonblocking_buffer_length > 0) {
       *total_shifts += terminal_output(terminal, terminal->nonblocking_buffer, terminal->nonblocking_buffer_length);
       if (callback)
-        callback(chunk, terminal->nonblocking_buffer_length, data);
+        callback(terminal->nonblocking_buffer, terminal->nonblocking_buffer_length, data);
       at_least_one = 1;
     }
     terminal->nonblocking_buffer_length = 0;
@@ -1021,6 +1027,8 @@ static int terminal_update(terminal_t* terminal, void (*callback)(char*, int, vo
       len = read(terminal->master, chunk, sizeof(chunk));
       if (len == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
         return at_least_one;
+      if (len <= 0)
+        return at_least_one ? at_least_one : -1;
       *total_shifts += terminal_output(terminal, chunk, len);
       if (callback)
         callback(chunk, len, data);
@@ -1111,6 +1119,7 @@ static void terminal_resize(terminal_t* terminal, int columns, int lines) {
   }
   for (int i = 0; i < VIEW_MAX; ++i) {
     buffer_char_t* buffer = malloc(sizeof(buffer_char_t) * columns * lines);
+    int* overflows = calloc(lines * sizeof(int), 1);
     memset(buffer, 0, sizeof(buffer_char_t) * columns * lines);
     if (terminal->views[i].buffer) {
       if (lines < terminal->lines && i == VIEW_NORMAL_BUFFER) {
@@ -1120,7 +1129,10 @@ static void terminal_resize(terminal_t* terminal, int columns, int lines) {
       int max_lines = min(terminal->lines, lines);
       for (int y = 0; y < max_lines; ++y)
         memcpy(&buffer[y*columns], &terminal->views[i].buffer[y*terminal->columns], min(terminal->columns, columns)*sizeof(buffer_char_t));
+      if (terminal->views[i].overflows)
+        memcpy(overflows, terminal->views[i].overflows, max_lines * sizeof(int));
       free(terminal->views[i].buffer);
+      free(terminal->views[i].overflows);
     }
     terminal->views[i].buffer = buffer;
     terminal->views[i].cursor_x = min(terminal->views[i].cursor_x, columns - 1);
@@ -1129,7 +1141,7 @@ static void terminal_resize(terminal_t* terminal, int columns, int lines) {
       terminal->views[i].scrolling_region_start = min(terminal->views[i].scrolling_region_start, lines - 1);
       terminal->views[i].scrolling_region_end = min(terminal->views[i].scrolling_region_end, lines);
     }
-    terminal->views[i].overflows = calloc(lines * sizeof(int), 1);
+    terminal->views[i].overflows = overflows;
   }
   terminal->columns = columns;
   terminal->lines = lines;
@@ -1255,46 +1267,67 @@ static terminal_t* terminal_new(int columns, int lines, int scrollback_limit, co
 }
 
 
+static void push_style(lua_State* L, buffer_styling_t style, int* group) {
+  uint64_t packed = (
+    ((uint64_t)style.foreground.attributes << 56) |
+    ((uint64_t)style.foreground.r << 48) |
+    ((uint64_t)style.foreground.g << 40) |
+    ((uint64_t)style.foreground.b << 32) |
+    ((uint64_t)style.background.attributes << 24) |
+    ((uint64_t)style.background.r << 16) |
+    ((uint64_t)style.background.g << 8) |
+    ((uint64_t)style.background.b << 0)
+  );
+  char hex_string[24];
+  sprintf(hex_string, "%" PRIu64, packed);
+  lua_pushstring(L, hex_string);
+  lua_rawseti(L, -2, ++(*group));
+}
+
 static void output_line(lua_State* L, buffer_char_t* start, buffer_char_t* end, int overflows) {
   lua_newtable(L);
-  int block_size = 0;
-  int last_nonzero_codepoint = 0;
   int group = 0;
-  char text_buffer[LIBTERMINAL_MAX_LINE_WIDTH] = {0};
+  int text_buffer_size = (int)(end - start) * 4 + 4;
+  char* text_buffer = calloc(text_buffer_size, 1);
+  if (!text_buffer)
+    luaL_error(L, "failed to allocate terminal line buffer");
+
+  buffer_char_t* line_start = start;
+  buffer_char_t* last_nonzero = line_start - 1;
+  for (buffer_char_t* cell = start; cell < end; ++cell) {
+    if (cell->codepoint != 0)
+      last_nonzero = cell;
+  }
+  if (last_nonzero < line_start) {
+    push_style(L, start->styling, &group);
+    lua_pushstring(L, overflows ? "" : "\n");
+    lua_rawseti(L, -2, ++group);
+    free(text_buffer);
+    return;
+  }
+
   buffer_styling_t style = start->styling;
   while (1) {
-    if (start >= end || start->styling.value != style.value) {
-      uint64_t packed = (
-        ((uint64_t)style.foreground.attributes << 56) |
-        ((uint64_t)style.foreground.r << 48) |
-        ((uint64_t)style.foreground.g << 40) |
-        ((uint64_t)style.foreground.b << 32) |
-        ((uint64_t)style.background.attributes << 24) |
-        ((uint64_t)style.background.r << 16) |
-        ((uint64_t)style.background.g << 8) |
-        ((uint64_t)style.background.b << 0)
-      );
-      char hex_string[24];
-      sprintf(hex_string, "%" PRIu64, packed);
-      lua_pushstring(L, hex_string);
-      lua_rawseti(L, -2, ++group);
-      lua_pushlstring(L, text_buffer, last_nonzero_codepoint);
-      if (!overflows && start >= end) {
+    int block_size = 0;
+    while (start < end && start->styling.value == style.value && start <= last_nonzero) {
+      block_size += codepoint_to_utf8(start->codepoint != 0 ? start->codepoint : ' ', &text_buffer[block_size]);
+      ++start;
+    }
+
+    if (start > last_nonzero || start >= end || start->styling.value != style.value) {
+      push_style(L, style, &group);
+      lua_pushlstring(L, text_buffer, block_size);
+      if (!overflows && start > last_nonzero) {
         lua_pushliteral(L, "\n");
         lua_concat(L, 2);
       }
       lua_rawseti(L, -2, ++group);
-      block_size = 0;
-      last_nonzero_codepoint = 0;
-      if (start >= end)
+      if (start > last_nonzero)
         break;
       style = start->styling;
     }
-    block_size += codepoint_to_utf8(start->codepoint != 0 ? start->codepoint : ' ', &text_buffer[block_size]);
-    if (start->codepoint != 0)
-      last_nonzero_codepoint = block_size;
-    ++start;
   }
+  free(text_buffer);
 }
 
 
