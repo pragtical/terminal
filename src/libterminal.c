@@ -160,6 +160,10 @@ typedef struct view_t {
   int cursor_x, cursor_y;
   int cursor_styling_inversed;
   buffer_styling_t cursor_styling; // What characters are currently being emitted as.
+  int saved_cursor_x, saved_cursor_y;
+  int saved_cursor_styling_inversed;
+  buffer_styling_t saved_cursor_styling;
+  charset_e saved_charset;
   cursor_mode_e cursor_mode;
   keys_mode_e cursor_keys_mode;
   keys_mode_e keypad_keys_mode;
@@ -359,29 +363,79 @@ static int terminal_line_is_empty(terminal_t* terminal, const buffer_char_t* lin
   return 1;
 }
 
+static void terminal_save_cursor(view_t* view) {
+  view->saved_cursor_x = view->cursor_x;
+  view->saved_cursor_y = view->cursor_y;
+  view->saved_cursor_styling = view->cursor_styling;
+  view->saved_cursor_styling_inversed = view->cursor_styling_inversed;
+  view->saved_charset = view->charset;
+}
+
+static void terminal_restore_cursor(terminal_t* terminal, view_t* view) {
+  view->cursor_x = min(max(view->saved_cursor_x, 0), terminal->columns - 1);
+  view->cursor_y = min(max(view->saved_cursor_y, 0), terminal->lines - 1);
+  view->cursor_styling = view->saved_cursor_styling;
+  view->cursor_styling_inversed = view->saved_cursor_styling_inversed;
+  view->charset = view->saved_charset;
+}
+
+static void terminal_blank_cells(buffer_char_t* cells, int count, buffer_styling_t styling) {
+  for (int i = 0; i < count; ++i)
+    cells[i] = (buffer_char_t){ styling, ' ' };
+}
+
+static void terminal_scroll_region_up(terminal_t* terminal, int start, int end, int count, int push_scrollback) {
+  view_t* view = &terminal->views[terminal->current_view];
+  start = min(max(start, 0), terminal->lines - 1);
+  end = min(max(end, start + 1), terminal->lines);
+  count = min(max(count, 1), end - start);
+
+  if (push_scrollback && terminal->current_view == VIEW_NORMAL_BUFFER) {
+    for (int y = start; y < start + count; ++y) {
+      if (!terminal_line_is_empty(terminal, &view->buffer[terminal->columns * y], view->overflows[y]))
+        terminal_push_scrollback_line(terminal, &view->buffer[terminal->columns * y], view->overflows[y]);
+    }
+  }
+
+  if (end > start + count) {
+    memmove(&view->buffer[terminal->columns * start], &view->buffer[terminal->columns * (start + count)], sizeof(buffer_char_t) * terminal->columns * (end - start - count));
+    memmove(&view->overflows[start], &view->overflows[start + count], sizeof(int) * (end - start - count));
+  }
+  for (int y = end - count; y < end; ++y) {
+    terminal_blank_cells(&view->buffer[terminal->columns * y], terminal->columns, view->cursor_styling);
+    view->overflows[y] = 0;
+  }
+}
+
+static void terminal_scroll_region_down(terminal_t* terminal, int start, int end, int count) {
+  view_t* view = &terminal->views[terminal->current_view];
+  start = min(max(start, 0), terminal->lines - 1);
+  end = min(max(end, start + 1), terminal->lines);
+  count = min(max(count, 1), end - start);
+
+  if (end > start + count) {
+    memmove(&view->buffer[terminal->columns * (start + count)], &view->buffer[terminal->columns * start], sizeof(buffer_char_t) * terminal->columns * (end - start - count));
+    memmove(&view->overflows[start + count], &view->overflows[start], sizeof(int) * (end - start - count));
+  }
+  for (int y = start; y < start + count; ++y) {
+    terminal_blank_cells(&view->buffer[terminal->columns * y], terminal->columns, view->cursor_styling);
+    view->overflows[y] = 0;
+  }
+}
+
 static void terminal_shift_buffer(terminal_t* terminal) {
   view_t* view = &terminal->views[terminal->current_view];
 
   if (view->scrolling_region_start != -1 && view->scrolling_region_end != -1) {
     // We perform this song and dance in case of Guldoman levels of resizing.
-    int start = min(view->scrolling_region_start, terminal->lines - 1);
-    int start_plus_1 = min((view->scrolling_region_start + 1), terminal->lines - 1);
-    int end = min(view->scrolling_region_end, terminal->lines);
-    if (terminal->current_view == VIEW_NORMAL_BUFFER && !terminal_line_is_empty(terminal, &view->buffer[terminal->columns * start], view->overflows[start]))
-      terminal_push_scrollback_line(terminal, &view->buffer[terminal->columns * start], view->overflows[start]);
-    if (end > start_plus_1) {
-      memmove(&view->buffer[terminal->columns * start], &view->buffer[terminal->columns * start_plus_1], sizeof(buffer_char_t) * terminal->columns * (end - start - 1));
-      memmove(&view->overflows[start], &view->overflows[start_plus_1], sizeof(int) * (end - start - 1));
-    }
-    memset(&view->buffer[terminal->columns * max(end - 1 , 0)], 0, sizeof(buffer_char_t) * terminal->columns);
-    view->overflows[max(end - 1, 0)] = 0;
+    terminal_scroll_region_up(terminal, view->scrolling_region_start, view->scrolling_region_end, 1, 1);
     return;
   }
   if (terminal->current_view == VIEW_NORMAL_BUFFER)
     terminal_push_scrollback_line(terminal, &view->buffer[0], view->overflows[0]);
   memmove(&view->buffer[0], &view->buffer[terminal->columns], sizeof(buffer_char_t) * terminal->columns * (terminal->lines - 1));
   memmove(&view->overflows[0], &view->overflows[1], sizeof(int) * (terminal->lines - 1));
-  memset(&view->buffer[terminal->columns * (terminal->lines - 1)], 0, sizeof(buffer_char_t) * terminal->columns);
+  terminal_blank_cells(&view->buffer[terminal->columns * (terminal->lines - 1)], terminal->columns, view->cursor_styling);
   view->overflows[terminal->lines - 1] = 0;
 }
 
@@ -394,6 +448,11 @@ static void terminal_switch_buffer(terminal_t* terminal, view_e view) {
     terminal->views[VIEW_ALTERNATE_BUFFER].cursor_y = 0;
     terminal->views[VIEW_ALTERNATE_BUFFER].cursor_styling = LIBTERMINAL_NO_STYLING;
     terminal->views[VIEW_ALTERNATE_BUFFER].cursor_styling_inversed = 0;
+    terminal->views[VIEW_ALTERNATE_BUFFER].saved_cursor_x = 0;
+    terminal->views[VIEW_ALTERNATE_BUFFER].saved_cursor_y = 0;
+    terminal->views[VIEW_ALTERNATE_BUFFER].saved_cursor_styling = LIBTERMINAL_NO_STYLING;
+    terminal->views[VIEW_ALTERNATE_BUFFER].saved_cursor_styling_inversed = 0;
+    terminal->views[VIEW_ALTERNATE_BUFFER].saved_charset = CHARSET_US;
     terminal->views[VIEW_ALTERNATE_BUFFER].scrolling_region_end = -1;
     terminal->views[VIEW_ALTERNATE_BUFFER].scrolling_region_start = -1;
     for (int i = 0; i < 256; ++i)
@@ -432,10 +491,9 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
     int seq_end = strlen(seq) - 1;
     switch (seq[seq_end]) {
       case '@': {
-        int length = parse_number(&seq[2], 1);
+        int length = min(max(parse_number(&seq[2], 1), 1), terminal->columns - view->cursor_x);
         memmove(&view->buffer[terminal->columns * view->cursor_y + view->cursor_x + length], &view->buffer[terminal->columns * view->cursor_y + view->cursor_x], sizeof(buffer_char_t) * max(terminal->columns - (view->cursor_x + length), 0));
-        for (int i = view->cursor_x; i < min(view->cursor_x + length, terminal->columns); ++i)
-          view->buffer[terminal->columns * view->cursor_y + i].codepoint = ' ';
+        terminal_blank_cells(&view->buffer[terminal->columns * view->cursor_y + view->cursor_x], min(length, terminal->columns - view->cursor_x), view->cursor_styling);
       } break;
       case 'A': view->cursor_y = max(view->cursor_y - max(parse_number(&seq[2], 1), 1), 0);     break;
       case 'B': view->cursor_y = min(view->cursor_y + max(parse_number(&seq[2], 1), 1), terminal->lines - 1); break;
@@ -461,21 +519,27 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
           case '1':
             for (int y = 0; y <= view->cursor_y; ++y) {
               int w = y == view->cursor_y ? (view->cursor_x+1) : terminal->columns;
-              memset(&view->buffer[terminal->columns * y], 0, sizeof(buffer_char_t) * w);
+              terminal_blank_cells(&view->buffer[terminal->columns * y], w, view->cursor_styling);
+              if (w == terminal->columns)
+                view->overflows[y] = 0;
             }
           break;
           case '3':
             terminal_clear_scrollback_buffer(terminal);
             // intentional fallthrough
           case '2':
-            memset(view->buffer, 0, sizeof(buffer_char_t) * (terminal->columns * terminal->lines));
+            for (int y = 0; y < terminal->lines; ++y)
+              terminal_blank_cells(&view->buffer[terminal->columns * y], terminal->columns, view->cursor_styling);
+            memset(view->overflows, 0, sizeof(int) * terminal->lines);
             view->cursor_x = 0;
             view->cursor_y = 0;
           break;
           default:
             for (int y = view->cursor_y; y < terminal->lines; ++y) {
               int x = y == view->cursor_y ? view->cursor_x : 0;
-              memset(&view->buffer[terminal->columns * y + x], 0, sizeof(buffer_char_t) * (terminal->columns - x));
+              terminal_blank_cells(&view->buffer[terminal->columns * y + x], terminal->columns - x, view->cursor_styling);
+              if (x == 0)
+                view->overflows[y] = 0;
             }
           break;
         }
@@ -492,19 +556,15 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
       } break;
       case 'L': {
         int length = parse_number(&seq[2], 1);
-        memmove(&view->buffer[terminal->columns * (view->cursor_y + length)], &view->buffer[terminal->columns * view->cursor_y], sizeof(buffer_char_t) * terminal->columns * max(end - (view->cursor_y + length), 0));
-        for (int y = view->cursor_y; y < min(view->cursor_y + length, end); ++y) {
-          for (int i = 0; i < terminal->columns; ++i)
-            view->buffer[terminal->columns * y + i].codepoint = ' ';
-        }
+        int start = view->scrolling_region_start == -1 ? 0 : view->scrolling_region_start;
+        if (view->cursor_y >= start && view->cursor_y < end)
+          terminal_scroll_region_down(terminal, view->cursor_y, end, length);
       } break;
       case 'M': {
         int length = parse_number(&seq[2], 1);
-        memmove(&view->buffer[terminal->columns * view->cursor_y], &view->buffer[terminal->columns * (view->cursor_y + length)], sizeof(buffer_char_t) * terminal->columns * max(end - (view->cursor_y + length), 0));
-        for (int y = end - length; y < end; ++y) {
-          for (int i = 0; i < terminal->columns; ++i)
-            view->buffer[terminal->columns * y + i].codepoint = ' ';
-        }
+        int start = view->scrolling_region_start == -1 ? 0 : view->scrolling_region_start;
+        if (view->cursor_y >= start && view->cursor_y < end)
+          terminal_scroll_region_up(terminal, view->cursor_y, end, length, 0);
       } break;
       case 'P': {
         int length = parse_number(&seq[2], 1);
@@ -512,13 +572,25 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
           if (i + length < terminal->columns)
             view->buffer[view->cursor_y * terminal->columns + i] = view->buffer[view->cursor_y * terminal->columns + i + length];
           else
-            view->buffer[view->cursor_y * terminal->columns + i].codepoint = ' ';
+            view->buffer[view->cursor_y * terminal->columns + i] = (buffer_char_t){ view->cursor_styling, ' ' };
         }
       } break;
       case 'X': {
         int length = parse_number(&seq[2], 1);
         for (int i = view->cursor_x; i < view->cursor_x + length && i < terminal->columns; ++i)
           view->buffer[view->cursor_y * terminal->columns + i] = (buffer_char_t){ view->cursor_styling, ' ' };
+      } break;
+      case 'S': {
+        terminal_scroll_region_up(terminal, view->scrolling_region_start == -1 ? 0 : view->scrolling_region_start, end, parse_number(&seq[2], 1), 0);
+      } break;
+      case 'T': {
+        terminal_scroll_region_down(terminal, view->scrolling_region_start == -1 ? 0 : view->scrolling_region_start, end, parse_number(&seq[2], 1));
+      } break;
+      case 's': {
+        terminal_save_cursor(view);
+      } break;
+      case 'u': {
+        terminal_restore_cursor(terminal, view);
       } break;
       case 'b': {
         if (view->last_graphical_character) {
@@ -750,8 +822,16 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
           default: unhandled = 1; break;
         }
       } break;
-      case 'D': view->cursor_y = min(view->cursor_y + 1, terminal->lines - 1); break;
-      case 'E': view->cursor_y = min(view->cursor_y + 1, terminal->lines - 1); view->cursor_x = 0; break;
+      case 'D':
+      case 'E': {
+        int end = (view->scrolling_region_end == -1 ? terminal->lines : min(view->scrolling_region_end, terminal->lines));
+        if (view->cursor_y == end - 1)
+          terminal_shift_buffer(terminal);
+        else
+          view->cursor_y = min(view->cursor_y + 1, terminal->lines - 1);
+        if (seq[1] == 'E')
+          view->cursor_x = 0;
+      } break;
       case '(':
         switch (seq[2]) {
           case '0': view->charset = CHARSET_DEC; break;
@@ -761,25 +841,19 @@ static int terminal_escape_sequence(terminal_t* terminal, terminal_escape_type_e
       break;
       case '=': view->keypad_keys_mode = KEYS_MODE_APPLICATION; break;
       case '>': view->keypad_keys_mode = KEYS_MODE_NORMAL; break;
+      case '7': terminal_save_cursor(view); break;
+      case '8': terminal_restore_cursor(terminal, view); break;
       case 'M':
         if (view->scrolling_region_start != -1 && view->scrolling_region_end != -1) {
           int start = min(view->scrolling_region_start, terminal->lines - 1);
           int end = min(view->scrolling_region_end, terminal->lines);
           if (view->cursor_y == start) {
-            if (end > start + 1) {
-              memmove(&view->buffer[terminal->columns * (start + 1)], &view->buffer[terminal->columns * start], sizeof(buffer_char_t) * terminal->columns * (end - start - 1));
-              memmove(&view->overflows[start + 1], &view->overflows[start], sizeof(int) * (end - start - 1));
-            }
-            memset(&view->buffer[terminal->columns * start], 0, sizeof(buffer_char_t) * terminal->columns);
-            view->overflows[start] = 0;
+            terminal_scroll_region_down(terminal, start, end, 1);
           } else if (view->cursor_y > start) {
             --view->cursor_y;
           }
         } else if (view->cursor_y == 0) {
-          memmove(&view->buffer[terminal->columns], &view->buffer[0], sizeof(buffer_char_t)*terminal->columns*(terminal->lines-1));
-          memmove(&view->overflows[1], &view->overflows[0], sizeof(int) * (terminal->lines - 1));
-          memset(&view->buffer[0], 0, sizeof(buffer_char_t)*terminal->columns);
-          view->overflows[0] = 0;
+          terminal_scroll_region_down(terminal, 0, terminal->lines, 1);
         } else {
           --view->cursor_y;
         }
@@ -1174,6 +1248,8 @@ static void terminal_resize(terminal_t* terminal, int columns, int lines) {
     terminal->views[i].buffer = buffer;
     terminal->views[i].cursor_x = min(terminal->views[i].cursor_x, columns - 1);
     terminal->views[i].cursor_y = min(terminal->views[i].cursor_y, lines - 1);
+    terminal->views[i].saved_cursor_x = min(terminal->views[i].saved_cursor_x, columns - 1);
+    terminal->views[i].saved_cursor_y = min(terminal->views[i].saved_cursor_y, lines - 1);
     if (terminal->views[i].scrolling_region_end != -1 || terminal->views[i].scrolling_region_end != -1) {
       terminal->views[i].scrolling_region_start = min(terminal->views[i].scrolling_region_start, lines - 1);
       terminal->views[i].scrolling_region_end = min(terminal->views[i].scrolling_region_end, lines);
@@ -1210,6 +1286,8 @@ static terminal_t* terminal_new(int columns, int lines, int scrollback_limit, co
     terminal->views[i].scrolling_region_end = -1;
     terminal->views[i].scrolling_region_start = -1;
     terminal->views[i].cursor_styling = LIBTERMINAL_NO_STYLING;
+    terminal->views[i].saved_cursor_styling = LIBTERMINAL_NO_STYLING;
+    terminal->views[i].saved_charset = CHARSET_US;
     terminal->views[i].tab_size = LIBTERMINAL_DEFAULT_TAB_SIZE;
   }
   terminal->scrollback_limit = scrollback_limit;
