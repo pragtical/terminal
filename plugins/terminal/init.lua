@@ -900,9 +900,10 @@ command.add(function(amount)
   local view = core.root_view.overlapping_view
                 or (core.root_view.overlapping_node and core.root_view.overlapping_node.active_view)
                 or core.active_view
-  return (view and view:is(TerminalView)), view, amount
+  return (view and view:is(TerminalView) and view.terminal), view, amount
 end, {
   ["terminal:scroll"] = function(view, amount)
+    if not view.terminal then return end
     local inverted = config.plugins.terminal.inversion_key and keymap.modkeys[config.plugins.terminal.inversion_key]
     local mouse_mode, mouse_encoding = view:get_mouse_tracking()
     if not inverted and mouse_mode and mouse_mode ~= "x10" then
