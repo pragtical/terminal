@@ -389,7 +389,6 @@ function TerminalView:spawn()
       if weak_table.self.size.y > 0 then
         core.redraw = weak_table.self:shift_selection_update() or core.redraw
         if core.active_view == self and not core.redraw then
-          core.redraw = true
           coroutine.yield(0.5)
         else
           coroutine.yield(1/30)
@@ -468,18 +467,29 @@ function TerminalView:update()
         self.terminal:focused(self.focused)
       end
       local x, y, mode = self.terminal:cursor()
-      if mode == "blinking" then
+      if mode == "blinking" and not config.disable_blink then
         local T, t0 = config.blink_period, core.blink_start
         local ta, tb = core.blink_timer, system.get_time()
         if ((tb - t0) % T < T / 2) ~= ((ta - t0) % T < T / 2) then
           core.redraw = true
         end
         core.blink_timer = tb
+        if core.request_update and self.focused
+          and system.window_has_focus(core.window) and self.terminal:scrollback() == 0
+        then
+          core.request_update(T / 2 - (tb - t0) % (T / 2))
+        end
       end
-      if self.scrolling_offscreen and (not self.last_scroll_time or system.get_time() - self.last_scroll_time > self.options.scrolling_speed) then
-        self.last_scroll_time = system.get_time()
-        self.terminal:scrollback(self.terminal:scrollback() + self.scrolling_offscreen)
-        core.redraw = true
+      if self.scrolling_offscreen then
+        local now = system.get_time()
+        if not self.last_scroll_time or now - self.last_scroll_time >= self.options.scrolling_speed then
+          self.last_scroll_time = now
+          self.terminal:scrollback(self.terminal:scrollback() + self.scrolling_offscreen)
+          core.redraw = true
+        end
+        if core.request_update then
+          core.request_update(self.last_scroll_time + self.options.scrolling_speed - now)
+        end
       end
       local scrollback, total_scrollback = self.terminal:scrollback()
       local lh = self.options.font:get_height()
@@ -554,7 +564,7 @@ function TerminalView:draw()
       local x = self.position.x + self.options.padding.x
       local should_draw_cursor = false
       if mode ~= "hidden" and core.active_view == self and line_idx - 1 == cursor_y and self.terminal:scrollback() == 0 then
-        if mode == "blinking" then
+        if mode == "blinking" and not config.disable_blink then
           local T = config.blink_period
           if (core.blink_timer - core.blink_start) % T < T / 2 then
             should_draw_cursor = true
