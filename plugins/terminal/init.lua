@@ -781,6 +781,31 @@ function TerminalView:send_mouse_event(button_code, col, row, suffix, encoding)
   end
 end
 
+---Report a vertical wheel step if the running application requested wheel input.
+local function report_wheel(view, delta, x, y)
+  local override = config.plugins.terminal.inversion_key
+  if view.exit_status or (view.task_view and not view.task) or keymap.modkeys[override] then
+    return false
+  end
+  local mode, encoding = view:get_mouse_tracking()
+  if not mode or mode == "x10" then return false end
+  local col, row = view:convert_coordinates(x, y)
+  view:send_mouse_event(delta > 0 and 64 or 65, col, row, "M", encoding)
+  return true
+end
+
+---Offer Ctrl+wheel to mouse-tracking applications before editor zoom bindings.
+---@param delta number Vertical wheel movement
+---@return boolean? consumed
+function TerminalView:on_mouse_wheel(delta)
+  if delta ~= 0 and keymap.modkeys.ctrl then
+    local mouse = core.root_view.mouse
+    if self:hit_test(mouse.x, mouse.y) then
+      return report_wheel(self, delta, mouse.x, mouse.y)
+    end
+  end
+end
+
 function TerminalView:get_word_boundaries(col, row)
   local index = row - self.terminal:scrollback()
   local line = self.terminal:lines(index, index)[1]
@@ -1037,18 +1062,15 @@ command.add(function(amount)
 end, {
   ["terminal:scroll"] = function(view, amount)
     if not view.terminal then return end
-    local inverted = config.plugins.terminal.inversion_key and keymap.modkeys[config.plugins.terminal.inversion_key]
-    local mouse_mode, mouse_encoding = view:get_mouse_tracking()
-    if not inverted and mouse_mode and mouse_mode ~= "x10" then
-      local col, row = view:convert_coordinates(view.mouse_x or view.position.x, view.mouse_y or view.position.y)
-      view:send_mouse_event(amount > 0 and 64 or 65, col, row, "M", mouse_encoding)
-    else
-      view.accumulated_scroll = (view.accumulated_scroll or 0) + (amount or 1)
-      if math.abs(view.accumulated_scroll) >= 1 then
-        local delta = math.floor(view.accumulated_scroll + 0.5)
-        view.terminal:scrollback(view.terminal:scrollback() + delta)
-        view.accumulated_scroll = view.accumulated_scroll - math.floor(view.accumulated_scroll + 0.5)
-      end
+    amount = amount or 1
+    if report_wheel(view, amount, view.mouse_x or view.position.x, view.mouse_y or view.position.y) then
+      return
+    end
+    view.accumulated_scroll = (view.accumulated_scroll or 0) + amount
+    if math.abs(view.accumulated_scroll) >= 1 then
+      local delta = math.floor(view.accumulated_scroll + 0.5)
+      view.terminal:scrollback(view.terminal:scrollback() + delta)
+      view.accumulated_scroll = view.accumulated_scroll - delta
     end
   end
 })

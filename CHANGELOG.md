@@ -10,6 +10,7 @@
 * Open terminals follow changes to the editor code font when Use Custom Font is disabled.
 * Support synchronized screen updates and correct cursor placement, wrapping and scrolling in full-screen applications.
 * Forward Alt shortcuts, modified navigation and function keys to the focused terminal. This lets Alt+X open the command palette in `pragtical tui`.
+* Forward Ctrl+wheel to applications that request mouse wheel input. At a normal shell prompt the editor handles zoom.
 * `Alt+T` toggles the drawer. `Alt+Shift+T` opens or focuses it.
 * Added reusable task terminals with interactive input, streamed output and exit callbacks.
 * Windows terminals now pass command arguments and the working directory to the child process.

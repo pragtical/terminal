@@ -33,7 +33,10 @@ Hiding the drawer keeps the shell running.
 
 While the terminal has focus, shortcuts such as `Alt+X` and `Alt+M` go to the
 running application. The editor's command-palette and tab-switching shortcuts
-remain available.
+remain available. `Ctrl+wheel` goes to terminal applications that request mouse
+wheel input. At a normal shell prompt it zooms the editor when the Scale
+plugin's **Use MouseWheel** setting is enabled. On macOS, the editor zoom
+shortcut is `Cmd+wheel`.
 
 Terminal text, background, cursor, and the first 16 ANSI colors follow the
 current editor theme, including when you switch themes in an open terminal.
