@@ -1,5 +1,7 @@
 # Unreleased
 
+* Terminal text, background, cursor and ANSI colors follow the active editor theme.
+* `Alt+T` toggles the drawer. `Alt+Shift+T` opens or focuses it.
 * Added reusable task terminals with interactive input, streamed output and exit callbacks.
 * Windows terminals now pass command arguments and the working directory to the child process.
 * Windows uses `%COMSPEC%` for the default shell, even when Wine or MSYS sets `SHELL`.

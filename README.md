@@ -12,7 +12,7 @@ A simple, and straightforward integrated terminal that presents itself as
 
 1. A configurable-length scrollback buffer.
 2. Alternate buffer support for things like `vim` and `htop`.
-3. Configurable color support.
+3. ANSI colors that follow the active Pragtical color scheme.
 4. Signal characters.
 5. Configurable shell.
 6. Selecting from terminal.
@@ -28,8 +28,12 @@ to choose a different shell.
 
 ### Usage
 
-You can activate the terminal as a docked view at the bottom of your editor by
-either pressing `alt+t`, or running the `Terminal: Toggle Drawer` command.
+`Alt+T` shows or hides the terminal drawer. `Alt+Shift+T` opens or focuses it.
+Hiding the drawer keeps the shell running.
+
+Terminal text, background, cursor, and the first 16 ANSI colors follow the
+current editor theme, including when you switch themes in an open terminal.
+Programs can also use the standard 256-color palette and explicit RGB colors.
 
 You can also put a `TerminalView` into your main viewing pane by using ``ctrl+shift+` ``
 or by running the `Terminal: Open Tab` command. It can be closed with `ctrl+shift+w`.
@@ -78,9 +82,8 @@ git clone --depth=1 https://github.com/pragtical/terminal.git \
 If you want to install on Windows, but don't have MSYS, you can download
 the files directly from our [release](https://github.com/pragtical/terminal/releases/tag/latest)
 page, download `libterminal.x86_64-windows.dll`, as well as the Source Code,
-and place both the dll, and the `plugins/terminal/init.lua` from the source
-code archive into your pragtical plugins directory as `plugins/terminal/init.lua`
-and `plugins/terminal/libterminal.x86_64-windows.dll`.
+copy the entire `plugins/terminal` directory from the source archive into your
+Pragtical plugins directory and place the DLL alongside its Lua files.
 
 ### Stanalone
 

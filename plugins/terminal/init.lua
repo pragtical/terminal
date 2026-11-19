@@ -8,6 +8,7 @@ local View = require "core.view"
 local keymap = require "core.keymap"
 local StatusView = require "core.statusview"
 
+local palette = require "plugins.terminal.palette"
 local terminal_native = require "plugins.terminal.libterminal"
 
 local prev_scale = SCALE
@@ -59,73 +60,19 @@ local default_config = {
   bold_font = style.code_font:copy(style.code_font:get_size(), { smoothing = true }),
   -- padding around the edges of the terminal
   padding = { x = 0, y = 0 },
-  -- default background color if not explicitly set by the shell
-  background = style.background or { common.color "#000000" },
-  -- default text color if not explicitly by the shell
-  text = style.syntax and style.syntax.normal or { common.color "#FFFFFF" },
   -- show bold text in bright colors
   bold_text_in_bright_colors = true,
   -- set to 0 to disable color adjustments based on background
   minimum_contrast_ratio = 3,
-  colors = {
-    -- You can customize these without many repercussions.
-    [  0] = { common.color "#000000" }, [  1] = { common.color "#aa0000" }, [  2] = { common.color "#44aa44" }, [  3] = { common.color "#aa5500" }, [  4] = { common.color "#0039aa" },
-    [  5] = { common.color "#aa22aa" }, [  6] = { common.color "#1a92aa" }, [  7] = { common.color "#aaaaaa" }, [  8] = { common.color "#777777" }, [  9] = { common.color "#ff8787" },
-    [ 10] = { common.color "#4ce64c" }, [ 11] = { common.color "#ded82c" }, [ 12] = { common.color "#295fcc" }, [ 13] = { common.color "#cc58cc" }, [ 14] = { common.color "#4ccce6" },
-    [ 15] = { common.color "#ffffff" },
-    -- You can't customize these without repercussions.
-    [ 16] = { common.color "#000000" }, [ 17] = { common.color "#00005f" }, [ 18] = { common.color "#000087" }, [ 19] = { common.color "#0000af" },
-    [ 20] = { common.color "#0000d7" }, [ 21] = { common.color "#0000ff" }, [ 22] = { common.color "#005f00" }, [ 23] = { common.color "#005f5f" }, [ 24] = { common.color "#005f87" },
-    [ 25] = { common.color "#005faf" }, [ 26] = { common.color "#005fd7" }, [ 27] = { common.color "#005fff" }, [ 28] = { common.color "#008700" }, [ 29] = { common.color "#00875f" },
-    [ 30] = { common.color "#008787" }, [ 31] = { common.color "#0087af" }, [ 32] = { common.color "#0087d7" }, [ 33] = { common.color "#0087ff" }, [ 34] = { common.color "#00af00" },
-    [ 35] = { common.color "#00af5f" }, [ 36] = { common.color "#00af87" }, [ 37] = { common.color "#00afaf" }, [ 38] = { common.color "#00afd7" }, [ 39] = { common.color "#00afff" },
-    [ 40] = { common.color "#00d700" }, [ 41] = { common.color "#00d75f" }, [ 42] = { common.color "#00d787" }, [ 43] = { common.color "#00d7af" }, [ 44] = { common.color "#00d7d7" },
-    [ 45] = { common.color "#00d7ff" }, [ 46] = { common.color "#00ff00" }, [ 47] = { common.color "#00ff5f" }, [ 48] = { common.color "#00ff87" }, [ 49] = { common.color "#00ffaf" },
-    [ 50] = { common.color "#00ffd7" }, [ 51] = { common.color "#00ffff" }, [ 52] = { common.color "#5f0000" }, [ 53] = { common.color "#5f005f" }, [ 54] = { common.color "#5f0087" },
-    [ 55] = { common.color "#5f00af" }, [ 56] = { common.color "#5f00d7" }, [ 57] = { common.color "#5f00ff" }, [ 58] = { common.color "#5f5f00" }, [ 59] = { common.color "#5f5f5f" },
-    [ 60] = { common.color "#5f5f87" }, [ 61] = { common.color "#5f5faf" }, [ 62] = { common.color "#5f5fd7" }, [ 63] = { common.color "#5f5fff" }, [ 64] = { common.color "#5f8700" },
-    [ 65] = { common.color "#5f875f" }, [ 66] = { common.color "#5f8787" }, [ 67] = { common.color "#5f87af" }, [ 68] = { common.color "#5f87d7" }, [ 69] = { common.color "#5f87ff" },
-    [ 70] = { common.color "#5faf00" }, [ 71] = { common.color "#5faf5f" }, [ 72] = { common.color "#5faf87" }, [ 73] = { common.color "#5fafaf" }, [ 74] = { common.color "#5fafd7" },
-    [ 75] = { common.color "#5fafff" }, [ 76] = { common.color "#5fd700" }, [ 77] = { common.color "#5fd75f" }, [ 78] = { common.color "#5fd787" }, [ 79] = { common.color "#5fd7af" },
-    [ 80] = { common.color "#5fd7d7" }, [ 81] = { common.color "#5fd7ff" }, [ 82] = { common.color "#5fff00" }, [ 83] = { common.color "#5fff5f" }, [ 84] = { common.color "#5fff87" },
-    [ 85] = { common.color "#5fffaf" }, [ 86] = { common.color "#5fffd7" }, [ 87] = { common.color "#5fffff" }, [ 88] = { common.color "#870000" }, [ 89] = { common.color "#87005f" },
-    [ 90] = { common.color "#870087" }, [ 91] = { common.color "#8700af" }, [ 92] = { common.color "#8700d7" }, [ 93] = { common.color "#8700ff" }, [ 94] = { common.color "#875f00" },
-    [ 95] = { common.color "#875f5f" }, [ 96] = { common.color "#875f87" }, [ 97] = { common.color "#875faf" }, [ 98] = { common.color "#875fd7" }, [ 99] = { common.color "#875fff" },
-    [100] = { common.color "#878700" }, [101] = { common.color "#87875f" }, [102] = { common.color "#878787" }, [103] = { common.color "#8787af" }, [104] = { common.color "#8787d7" },
-    [105] = { common.color "#8787ff" }, [106] = { common.color "#87af00" }, [107] = { common.color "#87af5f" }, [108] = { common.color "#87af87" }, [109] = { common.color "#87afaf" },
-    [110] = { common.color "#87afd7" }, [111] = { common.color "#87afff" }, [112] = { common.color "#87d700" }, [113] = { common.color "#87d75f" }, [114] = { common.color "#87d787" },
-    [115] = { common.color "#87d7af" }, [116] = { common.color "#87d7d7" }, [117] = { common.color "#87d7ff" }, [118] = { common.color "#87ff00" }, [119] = { common.color "#87ff5f" },
-    [120] = { common.color "#87ff87" }, [121] = { common.color "#87ffaf" }, [122] = { common.color "#87ffd7" }, [123] = { common.color "#87ffff" }, [124] = { common.color "#af0000" },
-    [125] = { common.color "#af005f" }, [126] = { common.color "#af0087" }, [127] = { common.color "#af00af" }, [128] = { common.color "#af00d7" }, [129] = { common.color "#af00ff" },
-    [130] = { common.color "#af5f00" }, [131] = { common.color "#af5f5f" }, [132] = { common.color "#af5f87" }, [133] = { common.color "#af5faf" }, [134] = { common.color "#af5fd7" },
-    [135] = { common.color "#af5fff" }, [136] = { common.color "#af8700" }, [137] = { common.color "#af875f" }, [138] = { common.color "#af8787" }, [139] = { common.color "#af87af" },
-    [140] = { common.color "#af87d7" }, [141] = { common.color "#af87ff" }, [142] = { common.color "#afaf00" }, [143] = { common.color "#afaf5f" }, [144] = { common.color "#afaf87" },
-    [145] = { common.color "#afafaf" }, [146] = { common.color "#afafd7" }, [147] = { common.color "#afafff" }, [148] = { common.color "#afd700" }, [149] = { common.color "#afd75f" },
-    [150] = { common.color "#afd787" }, [151] = { common.color "#afd7af" }, [152] = { common.color "#afd7d7" }, [153] = { common.color "#afd7ff" }, [154] = { common.color "#afff00" },
-    [155] = { common.color "#afff5f" }, [156] = { common.color "#afff87" }, [157] = { common.color "#afffaf" }, [158] = { common.color "#afffd7" }, [159] = { common.color "#afffff" },
-    [160] = { common.color "#d70000" }, [161] = { common.color "#d7005f" }, [162] = { common.color "#d70087" }, [163] = { common.color "#d700af" }, [164] = { common.color "#d700d7" },
-    [165] = { common.color "#d700ff" }, [166] = { common.color "#d75f00" }, [167] = { common.color "#d75f5f" }, [168] = { common.color "#d75f87" }, [169] = { common.color "#d75faf" },
-    [170] = { common.color "#d75fd7" }, [171] = { common.color "#d75fff" }, [172] = { common.color "#d78700" }, [173] = { common.color "#d7875f" }, [174] = { common.color "#d78787" },
-    [175] = { common.color "#d787af" }, [176] = { common.color "#d787d7" }, [177] = { common.color "#d787ff" }, [178] = { common.color "#d7af00" }, [179] = { common.color "#d7af5f" },
-    [180] = { common.color "#d7af87" }, [181] = { common.color "#d7afaf" }, [182] = { common.color "#d7afd7" }, [183] = { common.color "#d7afff" }, [184] = { common.color "#d7d700" },
-    [185] = { common.color "#d7d75f" }, [186] = { common.color "#d7d787" }, [187] = { common.color "#d7d7af" }, [188] = { common.color "#d7d7d7" }, [189] = { common.color "#d7d7ff" },
-    [190] = { common.color "#d7ff00" }, [191] = { common.color "#d7ff5f" }, [192] = { common.color "#d7ff87" }, [193] = { common.color "#d7ffaf" }, [194] = { common.color "#d7ffd7" },
-    [195] = { common.color "#d7ffff" }, [196] = { common.color "#ff0000" }, [197] = { common.color "#ff005f" }, [198] = { common.color "#ff0087" }, [199] = { common.color "#ff00af" },
-    [200] = { common.color "#ff00d7" }, [201] = { common.color "#ff00ff" }, [202] = { common.color "#ff5f00" }, [203] = { common.color "#ff5f5f" }, [204] = { common.color "#ff5f87" },
-    [205] = { common.color "#ff5faf" }, [206] = { common.color "#ff5fd7" }, [207] = { common.color "#ff5fff" }, [208] = { common.color "#ff8700" }, [209] = { common.color "#ff875f" },
-    [210] = { common.color "#ff8787" }, [211] = { common.color "#ff87af" }, [212] = { common.color "#ff87d7" }, [213] = { common.color "#ff87ff" }, [214] = { common.color "#ffaf00" },
-    [215] = { common.color "#ffaf5f" }, [216] = { common.color "#ffaf87" }, [217] = { common.color "#ffafaf" }, [218] = { common.color "#ffafd7" }, [219] = { common.color "#ffafff" },
-    [220] = { common.color "#ffd700" }, [221] = { common.color "#ffd75f" }, [222] = { common.color "#ffd787" }, [223] = { common.color "#ffd7af" }, [224] = { common.color "#ffd7d7" },
-    [225] = { common.color "#ffd7ff" }, [226] = { common.color "#ffff00" }, [227] = { common.color "#ffff5f" }, [228] = { common.color "#ffff87" }, [229] = { common.color "#ffffaf" },
-    [230] = { common.color "#ffffd7" }, [231] = { common.color "#ffffff" }, [232] = { common.color "#080808" }, [233] = { common.color "#121212" }, [234] = { common.color "#1c1c1c" },
-    [235] = { common.color "#262626" }, [236] = { common.color "#303030" }, [237] = { common.color "#3a3a3a" }, [238] = { common.color "#444444" }, [239] = { common.color "#4e4e4e" },
-    [240] = { common.color "#585858" }, [241] = { common.color "#626262" }, [242] = { common.color "#6c6c6c" }, [243] = { common.color "#767676" }, [244] = { common.color "#808080" },
-    [245] = { common.color "#8a8a8a" }, [246] = { common.color "#949494" }, [247] = { common.color "#9e9e9e" }, [248] = { common.color "#a8a8a8" }, [249] = { common.color "#b2b2b2" },
-    [250] = { common.color "#bcbcbc" }, [251] = { common.color "#c6c6c6" }, [252] = { common.color "#d0d0d0" }, [253] = { common.color "#dadada" }, [254] = { common.color "#e4e4e4" },
-    [255] = { common.color "#eeeeee" }
-  },
 }
-local function set_config_default_values(c) for _, v in ipairs(c) do if v.path then v.default = default_config[v.path] end end return c end
+local function set_config_default_values(spec)
+  for _, option in ipairs(spec) do
+    if option.path and option.default == nil then
+      option.default = default_config[option.path]
+    end
+  end
+  return spec
+end
 -- configuration for the settings GUI (do not modify)
 default_config.config_spec = set_config_default_values {
   name = "Terminal",
@@ -161,18 +108,6 @@ default_config.config_spec = set_config_default_values {
         config.plugins.terminal.font:get_size(), { smoothing = true }
       )
     end
-  },
-  {
-    label = "Background Color",
-    description = "The color of the terminal background (when not overridden by the shell).",
-    path = "background", type = "COLOR",
-    default = style.background or { common.color "#000000" }
-  },
-  {
-    label = "Text Color",
-    description = "The color of the text (when not overridden by the shell).",
-    path = "text", type = "COLOR",
-    default = style.syntax and style.syntax.normal or { common.color "#FFFFFF" }
   },
   {
     label = "Show Bold Text In Bright Colors",
@@ -241,7 +176,7 @@ default_config.config_spec = set_config_default_values {
   },
   {
     label = "Change Other Options",
-    description = "For other options such as the color palette, you can change them in the user module.",
+    description = "Edit additional terminal options in your user module.",
     icon = "P", type = "BUTTON", on_click = "core:open-user-module", path = ""
   }
 }
@@ -341,6 +276,18 @@ end
 
 local TerminalView = View:extend()
 
+---Refresh indexed colors and discard contrast adjustments from the previous palette.
+function TerminalView:update_colors()
+  local colors = palette.get(style)
+  local ratio = config.plugins.terminal.minimum_contrast_ratio
+  local bright = self.options.bold_text_in_bright_colors
+  if self.colors ~= colors or self.contrast_ratio ~= ratio or self.bright_colors ~= bright then
+    self.colors, self.contrast_ratio, self.bright_colors = colors, ratio, bright
+    self.contrast_foreground = {}
+    core.redraw = true
+  end
+end
+
 function TerminalView:get_name()
   if self.task_view then return "Task Terminal" end
   return (self.modified_since_last_focus and "* " or "") .. (self.terminal and self.terminal:name() or "Terminal")
@@ -352,6 +299,7 @@ function TerminalView:new(options)
   options = common.merge(common.merge({}, config.plugins.terminal), options)
   self.size.y = options.drawer_height
   self.options = options
+  self:update_colors()
   self.cursor = "ibeam"
   self.scrollable = true
   self.last_size = { x = self.size.x, y = self.size.y }
@@ -453,6 +401,7 @@ function TerminalView:update()
   if self.closed then return end
   TerminalView.super.update(self)
   if self.task_view and self.size.y <= 0 then return end
+  self:update_colors()
   if self.last_font_size and self.last_font_size ~= self.options.font:get_size() then
     self.options.bold_font:set_size(self.options.font:get_size())
   end
@@ -538,15 +487,15 @@ function TerminalView:convert_color(int, target, should_bright)
   local attributes = bit.rshift(int, 24)
   local type = bit.band(attributes, 0x7)
   if type == 0 then
-    if target == "foreground" then return self.options.text, attributes end
-    return self.options.background, attributes
+    if target == "foreground" then return style.text, attributes end
+    return style.background, attributes
   elseif type == 1 then
-    if target == "foreground" then return self.options.background, attributes end
-    return self.options.text, attributes
+    if target == "foreground" then return style.background, attributes end
+    return style.text, attributes
   elseif type == 2 then
     local index = bit.band(bit.rshift(int, 16), 0xFF)
     if index < 8 and should_bright and (bit.band(bit.rshift(attributes, 3), 0x1) ~= 0) then index = index + 8 end
-    return self.options.colors[tonumber(index)], attributes
+    return self.colors[tonumber(index)], attributes
   elseif type == 3 then
     return {
       tonumber(bit.band(bit.rshift(int, 16), 0xFF)),
@@ -568,9 +517,8 @@ function TerminalView:sorted_selection()
 end
 
 
-local contrast_foreground = {}
 function TerminalView:draw()
-  TerminalView.super.draw_background(self, self.options.background)
+  TerminalView.super.draw_background(self, style.background)
   if self.terminal then
     local cursor_x, cursor_y, mode = self.terminal:cursor()
     local space_width = self.options.font:get_width(" ")
@@ -596,15 +544,15 @@ function TerminalView:draw()
       local offset = 0
       local foreground, background, text_style
       for i = 1, #line, 2 do
-        line[i] = math.tointeger(line[i])
-        background = self:convert_color(bit.band(line[i], 0xFFFFFFFF), "background")
-        foreground, text_style = self:convert_color(bit.rshift(line[i], 32), "foreground", self.options.bold_text_in_bright_colors)
+        local packed = math.tointeger(line[i])
+        background = self:convert_color(bit.band(packed, 0xFFFFFFFF), "background")
+        foreground, text_style = self:convert_color(bit.rshift(packed, 32), "foreground", self.bright_colors)
 
-        if config.plugins.terminal.minimum_contrast_ratio > 0 then
-          if not contrast_foreground[line[i]] then
-            contrast_foreground[line[i]] = ensureContrastRatio(background, foreground, config.plugins.terminal.minimum_contrast_ratio)
+        if self.contrast_ratio > 0 then
+          if not self.contrast_foreground[line[i]] then
+            self.contrast_foreground[line[i]] = ensureContrastRatio(background, foreground, self.contrast_ratio)
           end
-          foreground = contrast_foreground[line[i]]
+          foreground = self.contrast_foreground[line[i]]
         end
 
         local font = (bit.band(bit.rshift(text_style, 3), 0x1) ~= 0) and self.options.bold_font or self.options.font
@@ -630,7 +578,7 @@ function TerminalView:draw()
             sections = { { background, foreground, subfunc(text, 1, selection[1] - offset) }, { foreground, background, subfunc(text, selection[1] - offset + 1, length) } }
           end
         end
-        -- split sections further, to insert an inverted bit for the cursor
+        -- Split the run at the cursor cell to draw it in the theme's caret color.
         if should_draw_cursor and cursor_x >= offset and cursor_x < offset + length then
           local local_offset = offset
           for i,v in ipairs(sections) do
@@ -642,7 +590,7 @@ function TerminalView:draw()
                 table.insert(sections, target, { v[1], v[2], subfunc(v[3], 1, cursor_x - local_offset) })
                 target = target + 1
               end
-              table.insert(sections, target, { v[2], v[1], subfunc(v[3], cursor_x - local_offset + 1, cursor_x - local_offset + 1) })
+              table.insert(sections, target, { style.caret, style.background, subfunc(v[3], cursor_x - local_offset + 1, cursor_x - local_offset + 1) })
               target = target + 1
               if cursor_x ~= local_offset + len - 1 then
                 table.insert(sections, target, { v[1], v[2], subfunc(v[3], cursor_x - local_offset + 2) })
@@ -655,7 +603,7 @@ function TerminalView:draw()
         for i, section in ipairs(sections) do
           if section then
             local background, foreground, text = table.unpack(section)
-            if background and background ~= self.options.background then
+            if background and background ~= style.background then
               renderer.draw_rect(x, y, (text:ulen() or #text)*space_width, lh, background)
             end
             x = renderer.draw_text(font, text, x, y, foreground)
@@ -917,7 +865,9 @@ function TerminalView:try_close(do_close)
   self.task, self.closed = nil, true
   if self.terminal then self.terminal:close() end
   self.terminal, self.routine = nil, nil
-  if core.terminal_view == self then core.terminal_view = nil end
+  if core.terminal_view == self then
+    core.terminal_view, core.terminal_view_node, core.terminal_view_closed = nil, nil, nil
+  end
   do_close()
   if task and task.on_exit then core.try(task.on_exit, 1) end
 end
@@ -1092,44 +1042,64 @@ end, {
   end
 })
 
-local function toggle_drawer(swap)
-  if not core.terminal_view_node or not core.terminal_view then
-    core.terminal_view = TerminalView(config.plugins.terminal)
-    core.terminal_view_node = core.root_view:get_active_node_default():split("down", core.terminal_view, { y = true }, true)
-    core.terminal_view_closed = core.terminal_view.size.y
+---Create or reveal the shared terminal drawer and give it keyboard focus.
+local function open_drawer()
+  local view = core.terminal_view
+  if not view then
+    view = TerminalView()
+    core.terminal_view = view
+    core.terminal_view_node = core.root_view:get_active_node_default():split("down", view, { y = true }, true)
+  elseif view.size.y == 0 then
+    core.terminal_view_node = core.root_view.root_node:get_node_for_view(view)
+    core.terminal_view_node:resize("y", core.terminal_view_closed or view.options.drawer_height)
+    core.terminal_view_closed = nil
   end
-  if not swap or core.terminal_view_closed then
-    if core.terminal_view_closed then
-      core.terminal_view_node:resize("y", core.terminal_view_closed)
-      core.terminal_view_closed = nil
-      core.set_active_view(core.terminal_view)
-    else
-      core.terminal_view_closed = core.terminal_view.size.y
-      core.terminal_view_node:resize("y", 0)
-      if core.last_active_view then core.set_active_view(core.last_active_view) end
-    end
+  if core.active_view ~= view then core.set_active_view(view) end
+end
+
+---Return keyboard focus to the previous view if it is still displayed.
+local function leave_drawer()
+  local previous = core.last_active_view
+  local node = previous and core.root_view.root_node:get_node_for_view(previous)
+  if not node or node.active_view ~= previous or previous.size.y <= 0 then
+    previous = core.root_view:get_primary_node().active_view
+  end
+  core.set_active_view(previous)
+end
+
+---Hide or reopen the shared drawer, keeping its process and height.
+local function toggle_drawer()
+  local view = core.terminal_view
+  if not view or view.size.y == 0 then return open_drawer() end
+  core.terminal_view_closed = view.size.y
+  core.terminal_view_node = core.root_view.root_node:get_node_for_view(view)
+  core.terminal_view_node:resize("y", 0)
+  if core.active_view == view then leave_drawer() end
+end
+
+---Switch focus between the drawer and the editor without hiding the drawer.
+local function swap_drawer()
+  if core.terminal_view and core.active_view == core.terminal_view then
+    leave_drawer()
   else
-    core.set_active_view(core.active_view == core.terminal_view and core.last_active_view or core.terminal_view)
+    open_drawer()
   end
 end
 
 command.add(nil, {
-  ["terminal:toggle-drawer"] = function()
-    toggle_drawer(false)
-  end,
-  ["terminal:swap-drawer"] = function()
-    toggle_drawer(true)
-  end,
+  ["terminal:open-drawer"] = open_drawer,
+  ["terminal:toggle-drawer"] = toggle_drawer,
+  ["terminal:swap-drawer"] = swap_drawer,
   ["terminal:execute"] = function(text)
-    local open_drawer = function(text)
-      if not core.terminal_view then command.perform("terminal:toggle-drawer") end
+    local function send_command(text)
+      if not core.terminal_view then open_drawer() end
       local target_view = core.active_view:is(TerminalView) and core.active_view or core.terminal_view
       target_view:input(text .. target_view.options.newline)
     end
     if not text then
-      core.command_view:enter("Execute Command", { submit = open_drawer })
+      core.command_view:enter("Execute Command", { submit = send_command })
     else
-      open_drawer(text)
+      send_command(text)
     end
   end,
   ["terminal:open-tab"] = function()
@@ -1138,9 +1108,7 @@ command.add(nil, {
   end
 })
 command.add(function() return core.terminal_view and core.active_view ~= core.terminal_view end, {
-  ["terminal:focus"] = function()
-    core.set_active_view(core.terminal_view)
-  end
+  ["terminal:focus"] = open_drawer
 })
 
 core.status_view:add_item({
@@ -1163,8 +1131,8 @@ core.status_view:add_item({
 -- add in the terminal metacommands not related to actually sending things to the temrinal first
 keymap.add({
   ["ctrl+shift+`"] = "terminal:open-tab",
-  ["alt+t"]  = "terminal:swap-drawer",
-  ["shift+alt+t"]  = "terminal:toggle-drawer"
+  ["alt+t"] = "terminal:toggle-drawer",
+  ["shift+alt+t"] = "terminal:open-drawer"
 })
 local keys = {
   ["return"] = "terminal:return",
