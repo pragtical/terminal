@@ -31,12 +31,32 @@ to choose a different shell.
 `Alt+T` shows or hides the terminal drawer. `Alt+Shift+T` opens or focuses it.
 Hiding the drawer keeps the shell running.
 
+While the terminal has focus, shortcuts such as `Alt+X` and `Alt+M` go to the
+running application. The editor's command-palette and tab-switching shortcuts
+remain available.
+
 Terminal text, background, cursor, and the first 16 ANSI colors follow the
 current editor theme, including when you switch themes in an open terminal.
 Programs can also use the standard 256-color palette and explicit RGB colors.
+The **Minimum Contrast Ratio** setting defaults to zero to preserve those colors.
+Raise it if you need more contrast between text and its background.
 
 You can also put a `TerminalView` into your main viewing pane by using ``ctrl+shift+` ``
 or by running the `Terminal: Open Tab` command. It can be closed with `ctrl+shift+w`.
+
+| Command | What it does |
+| --- | --- |
+| `terminal:run-command-in-tab` | Opens a new interactive shell tab and enters a command. The shell stays available when the command finishes. |
+| `terminal:run-command-in-drawer` | Shows and focuses the shared drawer and enters a command there. Use it when the drawer is at a shell prompt. |
+| `terminal:spawn-agent` | Runs a command such as `codex` as the main process of a dedicated terminal tab. The tab keeps its output and shows the exit status by default. |
+| `terminal:clear` | Clears the active screen and scrollback. A partially typed shell command remains pending. |
+| `terminal:reset` | Clears both screens and scrollback and restores the terminal's input and display modes. The running process stays alive. |
+
+The first three commands prompt for shell input when selected from the command
+palette. Plugins can supply the command directly, for example
+`command.perform("terminal:run-command-in-tab", "git status")`.
+**Settings → Plugins → Terminal → Agent Close on Exit** controls whether
+agent tabs stay open, close on success, or close after any exit.
 
 Most commands that would normally be bound to `ctrl+<key>` in the editor
 can be accessed by `ctrl+shift+<key>` when the terminal has focus.

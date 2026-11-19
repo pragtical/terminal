@@ -8,6 +8,8 @@ local View = require "core.view"
 local keymap = require "core.keymap"
 local StatusView = require "core.statusview"
 
+local keyboard = require "plugins.terminal.keyboard"
+local modifiers = require("core.modkeys-" .. (PLATFORM == "Mac OS X" and "macos" or "generic"))
 local palette = require "plugins.terminal.palette"
 local terminal_native = require "plugins.terminal.libterminal"
 
@@ -32,6 +34,8 @@ local default_config = {
   shell = default_shell,
   -- Arguments passed to the shell on startup.
   arguments = { },
+  -- Keep completed agent tabs available for reviewing their output.
+  agent_close_on_exit = "never",
   -- the environmental variable to set on shell instantiation
   environment = { },
   -- the amount of time between line scrolling when we're dragging offscreen
@@ -57,13 +61,13 @@ local default_config = {
   -- * MesloLGS NF Regular - https://github.com/romkatv/powerlevel10k-media
   -- You should use both, Julia as main and MesloLGS as fallback.
   font = style.code_font,
-  bold_font = style.code_font:copy(style.code_font:get_size(), { smoothing = true }),
+  bold_font = style.code_font:copy(style.code_font:get_size(), { bold = true }),
   -- padding around the edges of the terminal
   padding = { x = 0, y = 0 },
   -- show bold text in bright colors
   bold_text_in_bright_colors = true,
   -- set to 0 to disable color adjustments based on background
-  minimum_contrast_ratio = 3,
+  minimum_contrast_ratio = 0,
 }
 local function set_config_default_values(spec)
   for _, option in ipairs(spec) do
@@ -105,7 +109,7 @@ default_config.config_spec = set_config_default_values {
         config.plugins.terminal.font = style.code_font
       end
       config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-        config.plugins.terminal.font:get_size(), { smoothing = true }
+        config.plugins.terminal.font:get_size(), { bold = true }
       )
     end
   },
@@ -117,9 +121,9 @@ default_config.config_spec = set_config_default_values {
   },
   {
     label = "Minimum Contrast Ratio",
-    description = "Minimum contrast between the text and background color (set to 0 to disable auto color adjustment).",
+    description = "Increase text contrast against its background. Zero preserves application colors.",
     path = "minimum_contrast_ratio", type = "NUMBER",
-    default = 3
+    default = 0
   },
   {
     label = "Terminal Drawer Height",
@@ -159,8 +163,16 @@ default_config.config_spec = set_config_default_values {
   },
   {
     label = "Shell Arguments",
-    description = "Extra arguments to pass to the shell; does not function on windows.",
+    description = "Extra arguments to pass to the shell on startup.",
     path = "arguments", type = "LIST_STRINGS"
+  },
+  {
+    label = "Agent Close on Exit",
+    description = "Choose when Spawn Agent closes its tab after the command exits.",
+    path = "agent_close_on_exit", type = "selection",
+    values = {
+      { "Never", "never" }, { "Only on Successful Exit", "clean_exit" }, { "Always", "always" }
+    }
   },
   {
     label = "Terminal Type",
@@ -188,14 +200,14 @@ core.add_thread(function()
   if not config.plugins.terminal.use_custom_font then
     config.plugins.terminal.font = style.code_font
     config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-      config.plugins.terminal.font:get_size(), { smoothing = true }
+      config.plugins.terminal.font:get_size(), { bold = true }
     )
   elseif prev_scale ~= SCALE then
     config.plugins.terminal.font:set_size(
       (config.plugins.terminal.font:get_size() / prev_scale) * SCALE
     )
     config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-      config.plugins.terminal.font:get_size(), { smoothing = true }
+      config.plugins.terminal.font:get_size(), { bold = true }
     )
   end
 end)
@@ -276,6 +288,10 @@ end
 
 local TerminalView = View:extend()
 
+local function pack_rgb(color)
+  return color[1] * 65536 + color[2] * 256 + color[3]
+end
+
 ---Refresh indexed colors and discard contrast adjustments from the previous palette.
 function TerminalView:update_colors()
   local colors = palette.get(style)
@@ -283,12 +299,17 @@ function TerminalView:update_colors()
   local bright = self.options.bold_text_in_bright_colors
   if self.colors ~= colors or self.contrast_ratio ~= ratio or self.bright_colors ~= bright then
     self.colors, self.contrast_ratio, self.bright_colors = colors, ratio, bright
-    self.contrast_foreground = {}
+    self.run_styles = setmetatable({}, { __mode = "v" })
+    if self.terminal then self.terminal:colors(pack_rgb(style.text), pack_rgb(style.background)) end
     core.redraw = true
   end
 end
 
 function TerminalView:get_name()
+  if self.agent_command then
+    local title = self.terminal and self.terminal:name() or self.agent_command
+    return self.exit_status and string.format("%s [exit %d]", title, self.exit_status) or title
+  end
   if self.task_view then return "Task Terminal" end
   return (self.modified_since_last_focus and "* " or "") .. (self.terminal and self.terminal:name() or "Terminal")
 end
@@ -325,10 +346,13 @@ function TerminalView:shift_selection_update()
 end
 
 
-local function native_environment(defaults, overrides)
-  if PLATFORM ~= "Windows" then return common.merge(defaults, overrides) end
+local function native_environment(options, overrides)
+  local capabilities = { TERM = options.term, COLORTERM = "truecolor" }
+  if PLATFORM ~= "Windows" then
+    return common.merge(common.merge(capabilities, options.environment), overrides)
+  end
   local inherited, entries = {}, {}
-  for _, variables in ipairs { terminal_native.getenv(), defaults, overrides } do
+  for _, variables in ipairs { terminal_native.getenv(), capabilities, options.environment, overrides } do
     for key, value in pairs(variables) do inherited[key:upper()] = key .. "=" .. value end
   end
   for _, entry in pairs(inherited) do entries[#entries + 1] = entry end
@@ -337,14 +361,57 @@ local function native_environment(defaults, overrides)
 end
 
 local function new_process(view, executable, arguments, options)
-  return terminal_native.new(view.columns or 80, view.lines or 24,
+  local terminal = terminal_native.new(view.columns or 80, view.lines or 24,
     view.options.scrollback_limit, view.options.term, executable, arguments,
-    native_environment(view.options.environment, options.environment), view.options.debug, options.cwd)
+    native_environment(view.options, options.environment), view.options.debug, options.cwd)
+  terminal:colors(pack_rgb(style.text), pack_rgb(style.background))
+  return terminal
+end
+
+---Build the configured shell's argv for an interactive, single-command session.
+local function agent_argv(options, text)
+  local shell = (options.shell:match("[^/\\]+$") or options.shell):lower():gsub("%.exe$", "")
+  local argv = { options.shell, table.unpack(options.arguments) }
+  local flags = { "-i", "-c" }
+  if shell == "cmd" then
+    flags = { "/d", "/s", "/c" }
+  elseif shell == "pwsh" or shell == "powershell" then
+    flags = { "-Command" }
+  end
+  for _, flag in ipairs(flags) do table.insert(argv, flag) end
+  table.insert(argv, text)
+  return argv
 end
 
 function TerminalView:spawn()
-  self.terminal = new_process(self, self.options.shell, self.options.arguments,
+  if self.agent_command then
+    local function on_exit(status)
+      if self.closed then return end
+      self.exit_status = status
+      core.redraw = true
+      local policy = self.options.agent_close_on_exit
+      if policy == "always" or (policy == "clean_exit" and status == 0) then
+        local focused = core.active_view
+        self:close()
+        if focused ~= self and focused ~= core.active_view then core.set_active_view(focused) end
+      end
+    end
+    local ok, err = core.try(self.start_task, self, agent_argv(self.options, self.agent_command),
+      { cwd = core.root_project().path, on_exit = on_exit })
+    if not ok then
+      self.terminal = new_process(self, "DUMMY", {}, {})
+      self.terminal:input(tostring(err))
+      on_exit(127)
+    end
+    return
+  end
+  local ok, child = core.try(new_process, self, self.options.shell, self.options.arguments,
     { cwd = core.root_project().path })
+  if not ok then
+    self:close()
+    return
+  end
+  self.terminal = child
   if self.task_view then return end
   -- We make this weak so that any other method of closing the view gets caught up in the garbage collection and the coroutine doesn't count as a reference for gc purposes.
   local weak_table = { self = self }
@@ -355,11 +422,8 @@ function TerminalView:spawn()
       -- do not redraw when hidden
       if weak_table.self.size.y > 0 then
         core.redraw = weak_table.self:shift_selection_update() or core.redraw
-        if core.active_view == self and not core.redraw then
-          coroutine.yield(0.5)
-        else
-          coroutine.yield(1/30)
-        end
+        -- Interactive programs time out terminal capability and color queries.
+        coroutine.yield(1 / 60)
       else
         if weak_table.self:shift_selection_update() then
           weak_table.self:update()
@@ -402,23 +466,37 @@ function TerminalView:update()
   TerminalView.super.update(self)
   if self.task_view and self.size.y <= 0 then return end
   self:update_colors()
-  if self.last_font_size and self.last_font_size ~= self.options.font:get_size() then
-    self.options.bold_font:set_size(self.options.font:get_size())
+  local font, font_size = self.options.font, self.options.font:get_size()
+  local font_changed = self.last_font ~= font or self.last_font_size ~= font_size
+  if font_changed then
+    self.last_font, self.last_font_size = font, font_size
+    self.options.bold_font:set_size(font_size)
+    self.italic_font = font:copy(font_size, { italic = true })
+    self.bold_italic_font = font:copy(font_size, { bold = true, italic = true })
+    self.cell_width = math.max(1, math.ceil(font:get_width("M")))
+    self.cell_height = math.max(1, math.ceil(font:get_height()))
+    self.integral_fonts = {}
+    for _, face in ipairs { font, self.options.bold_font, self.italic_font, self.bold_italic_font } do
+      self.integral_fonts[face] = face:get_width("M") == self.cell_width
+    end
   end
-  if (self.last_font_size and self.last_font_size ~= self.options.font:get_size()) or self.size.x > 0 and self.size.y > 0 and not self.terminal or self.last_size.x ~= self.size.x or self.last_size.y ~= self.size.y then
-    self.columns = math.max(math.floor((self.size.x - self.options.padding.x*2) / self.options.font:get_width("W")), 1)
-    self.lines = math.max(math.floor((self.size.y - self.options.padding.y*2) / self.options.font:get_height()), 1)
-    if self.lines > 0 and self.columns > 0 then
-      if not self.terminal then
-        self:spawn()
-      else
-        self.terminal:size(self.columns, self.lines)
-        self.last_size = { x = self.size.x, y = self.size.y }
-      end
+  if self.size.x > 0 and self.size.y > 0 and (font_changed or not self.terminal or self.last_size.x ~= self.size.x or self.last_size.y ~= self.size.y) then
+    self.columns = math.max(math.floor((self.size.x - self.options.padding.x*2) / self.cell_width), 1)
+    self.lines = math.max(math.floor((self.size.y - self.options.padding.y*2) / self.cell_height), 1)
+    self.last_size.x, self.last_size.y = self.size.x, self.size.y
+    if not self.terminal then
+      self:spawn()
+    else
+      self.terminal:size(self.columns, self.lines)
     end
   end
   if self.terminal then
     if not self.task_view then core.redraw = self:shift_selection_update() or core.redraw end
+    if self.sync_deadline and system.get_time() >= self.sync_deadline then
+      self.terminal:screen_state(false)
+      self.sync_deadline = nil
+      core.redraw = true
+    end
     if self.deferred_input then
       self:input(self.deferred_input)
       self.deferred_input = nil
@@ -426,7 +504,6 @@ function TerminalView:update()
     if self.task_view or self.terminal:exited() == false then
       self.cursor = "ibeam"
       if self.terminal:mouse_tracking_mode()
-         or self.v_scrollbar.hovering.track
          or self.v_scrollbar.hovering.track then
         self.cursor = "arrow"
       end
@@ -436,7 +513,7 @@ function TerminalView:update()
         self.terminal:focused(self.focused)
       end
       local x, y, mode = self.terminal:cursor()
-      if mode == "blinking" and not config.disable_blink then
+      if not self.exit_status and mode == "blinking" and not config.disable_blink then
         local T, t0 = config.blink_period, core.blink_start
         local ta, tb = core.blink_timer, system.get_time()
         if ((tb - t0) % T < T / 2) ~= ((ta - t0) % T < T / 2) then
@@ -461,10 +538,9 @@ function TerminalView:update()
         end
       end
       local scrollback, total_scrollback = self.terminal:scrollback()
-      local lh = self.options.font:get_height()
       -- 0 should be if we're at max scrollback. 1 should be if we're at 0 scrollback.
       self.v_scrollbar:set_size(self.position.x, self.position.y, self.size.x, self.size.y, self:get_scrollable_size())
-      self.v_scrollbar:set_percent(1.0 - (scrollback / total_scrollback))
+      self.v_scrollbar:set_percent(total_scrollback > 0 and 1 - scrollback / total_scrollback or 1)
       self.v_scrollbar:update()
     else
       core.add_thread(function()
@@ -472,7 +548,6 @@ function TerminalView:update()
       end)
     end
   end
-  self.last_font_size = self.options.font:get_size()
 end
 
 
@@ -517,111 +592,144 @@ function TerminalView:sorted_selection()
 end
 
 
-function TerminalView:draw()
-  TerminalView.super.draw_background(self, style.background)
-  if self.terminal then
-    local cursor_x, cursor_y, mode = self.terminal:cursor()
-    local space_width = self.options.font:get_width(" ")
+-- Decode each native style once per theme. Apply faint after contrast adjustment.
+local function run_style(view, key)
+  local cached = view.run_styles[key]
+  if cached then return cached end
+  local packed = math.tointeger(key)
+  local bg, decorations = view:convert_color(bit.band(packed, 0xFFFFFFFF), "background")
+  -- The view already painted the default background. Repainting it for an
+  -- explicit RGB match can erase box-drawing strokes that cross cell edges.
+  local base = style.background
+  if bg ~= base and bg[1] == base[1] and bg[2] == base[2] and bg[3] == base[3]
+    and (bg[4] or 255) == (base[4] or 255) then bg = base end
+  local fg, flags = view:convert_color(bit.rshift(packed, 32), "foreground", view.bright_colors)
+  if view.contrast_ratio > 0 then fg = ensureContrastRatio(bg, fg, view.contrast_ratio) end
+  if bit.band(flags, 64) ~= 0 then
+    fg = { math.floor((fg[1]+bg[1])/2), math.floor((fg[2]+bg[2])/2), math.floor((fg[3]+bg[3])/2), fg[4] or 255 }
+  end
+  if bit.band(decorations, 8) ~= 0 then fg = bg end
+  cached = { strike = bit.band(decorations, 16) ~= 0, background = bg, foreground = fg, bold = bit.band(flags, 8) ~= 0,
+    italic = bit.band(flags, 16) ~= 0, underline = bit.band(flags, 32) ~= 0 }
+  view.run_styles[key] = cached
+  return cached
+end
 
-    local y = self.position.y + self.options.padding.y
-    local lh = self.options.font:get_height()
+-- Native lines batch adjacent cells with the same style. A wide or composed
+-- glyph has its own run whose width is measured in terminal cells.
+local function line_run(line, i)
+  local text = line[i]
+  if text:sub(-1) == "\n" then text = text:sub(1, -2) end
+  local cluster = line.widths and line.widths[i]
+  return text, cluster or text:ulen(), cluster
+end
 
-
-    local selection = self:sorted_selection()
-    for line_idx, line in ipairs(self.terminal:lines()) do
-      local x = self.position.x + self.options.padding.x
-      local should_draw_cursor = false
-      if mode ~= "hidden" and core.active_view == self and line_idx - 1 == cursor_y and self.terminal:scrollback() == 0 then
-        if mode == "blinking" and not config.disable_blink then
-          local T = config.blink_period
-          if (core.blink_timer - core.blink_start) % T < T / 2 then
-            should_draw_cursor = true
-          end
-        else
-          should_draw_cursor = true
-        end
+local function draw_glyphs(view, span, y)
+  local face, text, x, fg = span.face, span.text, span.x, span.fg
+  if text:find("%S") then
+    if span.cluster or (view.integral_fonts[face] and not text:find("[\128-\255]")) then
+      renderer.draw_text(face, text, x, y, fg)
+    else
+      local gx = x
+      for glyph in text:gmatch("[^\128-\191][\128-\191]*") do
+        if glyph ~= " " then renderer.draw_text(face, glyph, gx, y, fg) end
+        gx = gx + view.cell_width
       end
-      local offset = 0
-      local foreground, background, text_style
-      for i = 1, #line, 2 do
-        local packed = math.tointeger(line[i])
-        background = self:convert_color(bit.band(packed, 0xFFFFFFFF), "background")
-        foreground, text_style = self:convert_color(bit.rshift(packed, 32), "foreground", self.bright_colors)
-
-        if self.contrast_ratio > 0 then
-          if not self.contrast_foreground[line[i]] then
-            self.contrast_foreground[line[i]] = ensureContrastRatio(background, foreground, self.contrast_ratio)
-          end
-          foreground = self.contrast_foreground[line[i]]
-        end
-
-        local font = (bit.band(bit.rshift(text_style, 3), 0x1) ~= 0) and self.options.bold_font or self.options.font
-        local text = line[i+1]
-        local length = text:ulen()
-        local valid_utf8 = length ~= nil
-        local subfunc, lengthfunc = string.usub, string.ulen
-        if not valid_utf8 then
-          length = #text
-          lengthfunc = function(str) return #str end
-          subfunc = string.sub
-        end
-        local idx = (line_idx - 1) - self.terminal:scrollback()
-        local sections = { { background, foreground, text } }
-        if selection then
-          if ((idx == selection[2] and selection[1] <= offset) or selection[2] < idx) and (selection[4] > idx or (idx == selection[4] and (selection[3] >= offset + length))) then -- overlaps all
-            sections = { { foreground, background, text } }
-          elseif (idx == selection[2] and idx == selection[4] and selection[1] > offset and selection[3] < offset + length) then -- overlaps in middle
-            sections = { { background, foreground, subfunc(text, 1, selection[1] - offset) }, { foreground, background, subfunc(text, selection[1] - offset + 1, selection[3] - offset) }, { background, foreground, subfunc(text, selection[3] - offset + 1, length) } }
-          elseif (selection[2] < idx or (idx == selection[2] and selection[1] <= offset)) and (idx == selection[4] and selection[3] < offset + length and selection[3] >= offset) then -- overlaps start
-            sections = { { foreground, background, subfunc(text, 1, selection[3] - offset) }, { background, foreground, subfunc(text, selection[3] - offset + 1, length) } }
-          elseif (idx == selection[2] and selection[1] < offset + length and selection[1] >= offset) and (selection[4] > idx or (selection[4] == idx and selection[3] >= offset + length)) then -- overlaps end
-            sections = { { background, foreground, subfunc(text, 1, selection[1] - offset) }, { foreground, background, subfunc(text, selection[1] - offset + 1, length) } }
-          end
-        end
-        -- Split the run at the cursor cell to draw it in the theme's caret color.
-        if should_draw_cursor and cursor_x >= offset and cursor_x < offset + length then
-          local local_offset = offset
-          for i,v in ipairs(sections) do
-            local len = lengthfunc(v[3])
-            if cursor_x >= local_offset and cursor_x < local_offset + len then
-              sections[i] = nil
-              local target = i
-              if cursor_x ~= local_offset then
-                table.insert(sections, target, { v[1], v[2], subfunc(v[3], 1, cursor_x - local_offset) })
-                target = target + 1
-              end
-              table.insert(sections, target, { style.caret, style.background, subfunc(v[3], cursor_x - local_offset + 1, cursor_x - local_offset + 1) })
-              target = target + 1
-              if cursor_x ~= local_offset + len - 1 then
-                table.insert(sections, target, { v[1], v[2], subfunc(v[3], cursor_x - local_offset + 2) })
-              end
-              break
-            end
-            local_offset = local_offset + len
-          end
-        end
-        for i, section in ipairs(sections) do
-          if section then
-            local background, foreground, text = table.unpack(section)
-            if background and background ~= style.background then
-              renderer.draw_rect(x, y, (text:ulen() or #text)*space_width, lh, background)
-            end
-            x = renderer.draw_text(font, text, x, y, foreground)
-          end
-        end
-        offset = offset + length
-      end
-      y = y + lh
     end
   end
+  if span.style.strike then renderer.draw_rect(x, y + math.floor(view.cell_height / 2), span.width, 1, fg) end
+  if span.style.underline then renderer.draw_rect(x, y + view.cell_height - 2, span.width, 1, fg) end
+end
+
+function TerminalView:draw()
+  self:draw_background(style.background)
+  if not self.terminal then return end
+  local revision, synchronized = self.terminal:screen_state()
+  if synchronized then
+    if not self.sync_deadline then
+      self.sync_deadline = system.get_time() + 1
+      if core.request_update then core.request_update(1) end
+    end
+  else
+    self.sync_deadline = nil
+    if revision ~= self.screen_revision or self.screen_terminal ~= self.terminal then
+      self.screen_rows = self.terminal:lines()
+      self.screen_cursor = { self.terminal:cursor() }
+      self.screen_scrollback = self.terminal:scrollback()
+      self.screen_revision, self.screen_terminal = revision, self.terminal
+    end
+  end
+  if not self.screen_rows then return end
+  local cursor_x, cursor_y, mode, shape = table.unpack(self.screen_cursor)
+  local scrollback = self.screen_scrollback
+  local show_cursor = not self.exit_status and mode ~= "hidden" and core.active_view == self and scrollback == 0
+  if mode == "blinking" and not config.disable_blink then
+    show_cursor = show_cursor and (core.blink_timer - core.blink_start) % config.blink_period < config.blink_period / 2
+  end
+  local origin = self.position.x + self.options.padding.x
+  local y = self.position.y + self.options.padding.y
+  local selection = self:sorted_selection()
+  local spans = self.row_spans or {}
+  self.row_spans = spans
+  local max_spans = 0
+  for row, line in ipairs(self.screen_rows) do
+    local count = 0
+    local offset, first, last = 0, 0, 0
+    local index = row - 1 - scrollback
+    if selection and selection[2] <= index and index <= selection[4] then
+      first = index == selection[2] and selection[1] or 0
+      last = index == selection[4] and selection[3] or self.columns
+    end
+    local caret = show_cursor and row - 1 == cursor_y and cursor_x or -1
+    for i = 1, #line, 2 do
+      local run = run_style(self, line[i])
+      local face = run.bold and (run.italic and self.bold_italic_font or self.options.bold_font)
+        or (run.italic and self.italic_font or self.options.font)
+      local text, cells, cluster = line_run(line, i+1)
+      local col, stop = offset, offset + cells
+      while col < stop do
+        local edge = stop
+        if not cluster then
+          if first > col then edge = math.min(edge, first) end
+          if last > col then edge = math.min(edge, last) end
+          if caret > col then edge = math.min(edge, caret)
+          elseif caret == col then edge = math.min(edge, caret + 1) end
+        end
+        local bg, fg = run.background, run.foreground
+        if shape == "block" and caret >= col and caret < edge then bg, fg = style.caret, style.background
+        elseif first < edge and last > col then bg, fg = fg, bg end
+        local part = text
+        if col ~= offset or edge ~= stop then part = text:usub(col-offset+1, edge-offset) end
+        count = count + 1
+        local span = spans[count] or {}
+        spans[count] = span
+        span.x, span.width = origin + col*self.cell_width, (edge-col)*self.cell_width
+        span.face, span.text, span.cluster, span.style, span.fg = face, part, cluster, run, fg
+        if bg ~= style.background then renderer.draw_rect(span.x, y, span.width, self.cell_height, bg) end
+        col = edge
+      end
+      offset = stop
+    end
+    -- Paint the whole row's backgrounds before glyphs that overhang adjacent cells.
+    for i = 1, count do draw_glyphs(self, spans[i], y) end
+    max_spans = math.max(max_spans, count)
+    if caret >= 0 then
+      local x = origin + caret*self.cell_width
+      if shape == "bar" then renderer.draw_rect(x, y, 2, self.cell_height, style.caret)
+      elseif shape == "underline" then renderer.draw_rect(x, y+self.cell_height-2, self.cell_width, 2, style.caret)
+      elseif caret >= offset then renderer.draw_rect(x, y, self.cell_width, self.cell_height, style.caret) end
+    end
+    y = y + self.cell_height
+  end
+  for i = #spans, max_spans + 1, -1 do spans[i] = nil end
   TerminalView.super.draw_scrollbar(self)
 end
 
 function TerminalView:convert_coordinates(x, y)
-  local w = self.options.font:get_width(" ")
+  local w = self.cell_width or math.max(1, math.ceil(self.options.font:get_width("M")))
   local col_exact = math.floor((x - self.position.x - self.options.padding.x) / w)
   local col_approx = common.round((x - self.position.x - self.options.padding.x) / w)
-  local row = math.floor((y - self.position.y - self.options.padding.y) / self.options.font:get_height())
+  local row = math.floor((y - self.position.y - self.options.padding.y) / (self.cell_height or self.options.font:get_height()))
   return math.max(0, col_exact), math.max(0, row), math.max(0, col_approx)
 end
 
@@ -648,34 +756,40 @@ function TerminalView:get_active_mouse_button_code()
 end
 
 function TerminalView:send_mouse_event(button_code, col, row, suffix, encoding)
+  if keymap.modkeys.shift then button_code = button_code + 4 end
+  if keymap.modkeys.alt then button_code = button_code + 8 end
+  if keymap.modkeys.ctrl then button_code = button_code + 16 end
+  col = common.clamp(col, 0, self.columns - 1)
+  row = common.clamp(row, 0, self.lines - 1)
   if encoding == "sgr" then
     self.terminal:input("\x1B[<" .. button_code .. ";" .. (col + 1) .. ";" .. (row + 1) .. suffix)
-  else
+  elseif col < 223 and row < 223 then
     self.terminal:input("\x1B[M" .. string.char(32 + button_code) .. string.char(32 + col + 1) .. string.char(32 + row + 1))
   end
 end
 
 function TerminalView:get_word_boundaries(col, row)
-  for line_idx, line in ipairs(self.terminal:lines()) do
-    if line_idx == row + 1 then
-      local text = ""
-      for i = 1, #line, 2 do
-        text = text .. line[i+1]
+  local index = row - self.terminal:scrollback()
+  local line = self.terminal:lines(index, index)[1]
+  if not line then return col, index, col + 1, index end
+  local start, offset = 0, 0
+  for i = 2, #line, 2 do
+    local text, cells, cluster = line_run(line, i)
+    if cluster then
+      offset = offset + cells
+    else
+      for glyph in text:gmatch("[^\128-\191][\128-\191]*") do
+        if glyph:match("%s") then
+          if col == offset then return col, index, col + 1, index end
+          if col < offset then return start, index, offset, index end
+          start = offset + 1
+        end
+        offset = offset + 1
       end
-      local scrollback = self.terminal:scrollback()
-      row = row - scrollback
-      if text:sub(col + 1, col + 1):match("%s") then
-        return col, row, col + 1, row
-      end
-      local next_space = text:find("%s", col + 1) or #text
-      local last_space = 0
-      local idx = text:reverse():find("%s", #text - col)
-      if idx then
-        last_space = (#text - idx) + 1
-      end
-      return last_space, row, next_space - 1, row
     end
   end
+  if col >= offset then return col, index, col + 1, index end
+  return start, index, offset, index
 end
 
 function TerminalView:on_mouse_pressed(button, x, y, clicks)
@@ -784,7 +898,7 @@ function TerminalView:on_mouse_released(button, x, y)
   local mouse_mode, mouse_encoding = self:get_mouse_tracking()
   local button_code = self:get_mouse_button_code(button)
   if button_code ~= nil and not inverted and mouse_mode and mouse_mode ~= "x10" then
-    self:send_mouse_event(3, col, row, "m", mouse_encoding)
+    self:send_mouse_event(mouse_encoding == "sgr" and button_code or 3, col, row, "m", mouse_encoding)
   end
   if button_code ~= nil then
     self.mouse_buttons[button] = nil
@@ -807,7 +921,7 @@ end
 
 
 function TerminalView:input(text)
-  if self.task_view and not self.task then return false end
+  if self.closed or (self.task_view and not self.task) then return false end
   if self.terminal then
     self.terminal:input(text)
     if self.terminal:scrollback() ~= 0 then self.terminal:scrollback(0) end
@@ -881,41 +995,23 @@ end
 
 
 function TerminalView:get_text(line1, col1, line2, col2)
-  local full_buffer = {}
-  for line_idx, line in ipairs(self.terminal:lines(line1, line2)) do
-    local idx = line_idx - 1 + line1
+  local result = {}
+  for number, line in ipairs(self.terminal:lines(line1, line2)) do
+    local row = line1 + number - 1
+    local first = row == line1 and col1 or 0
+    local last = row == line2 and col2 or math.huge
     local offset = 0
-    for i = 1, #line, 2 do
-      local text = line[i + 1]
-      local length = text:ulen()
-      local usub = string.usub
-      if length == nil then
-        length = #text
-        usub = string.sub
+    for i = 2, #line, 2 do
+      local text, cells, cluster = line_run(line, i)
+      local start, stop = math.max(0, first-offset), math.min(cells, last-offset)
+      if stop > start then
+        result[#result+1] = cluster and text or text:usub(start+1, stop)
       end
-      if idx == line1 and idx == line2 then
-        if offset + length >= col1 and offset <= col2 then
-          local s = math.max(col1 - offset, 0) + 1
-          local e = math.min(col2 - offset, length)
-          table.insert(full_buffer, usub(text, s, e))
-        end
-      elseif idx == line1 then
-        if offset + length >= col1 then
-          local s = math.max(col1 - offset, 0) + 1
-          table.insert(full_buffer, usub(text, s, length))
-        end
-      elseif idx > line1 and idx < line2 then
-        table.insert(full_buffer, text)
-      elseif idx == line2 then
-        if offset <= col2 then
-          local e = math.min(col2 - offset, length)
-          table.insert(full_buffer, usub(text, 1, e))
-        end
-      end
-      offset = offset + length
+      offset = offset + cells
     end
+    if last > offset and line[#line]:sub(-1) == "\n" then result[#result+1] = "\n" end
   end
-  return table.concat(full_buffer)
+  return table.concat(result)
 end
 
 
@@ -946,8 +1042,17 @@ end, {
 
 
 local active_terminal_predicate = function(...)
-  return (core.active_view:is(TerminalView) and core.active_view.terminal), core.active_view, ...
+  local view = core.active_view
+  return view and view:extends(TerminalView) and view.terminal, view, ...
 end
+
+---Discard selections and gestures referring to erased screen contents.
+local function clear_selection(view)
+  view.selection, view.pressing, view.word_selecting, view.row_selecting = nil, nil, nil, nil
+  view.scrolling_offscreen = nil
+  core.redraw = true
+end
+
 command.add(active_terminal_predicate, {
   ["terminal:backspace"] = function(view) view:input(view.options.backspace) end,
   ["terminal:ctrl-backspace"] = function(view) view:input(view.options.backspace == "\b" and "\x7F" or "\b") end,
@@ -955,7 +1060,7 @@ command.add(active_terminal_predicate, {
   ["terminal:insert"] = function(view) view:input("\x1B[2~") end,
   ["terminal:delete"] = function(view) view:input(view.options.delete) end,
   ["terminal:return"] = function(view) view:input(view.options.newline) end,
-  ["terminal:enter"] = function(view) view:input(view.terminal:cursor_keys_mode() == "application" and "\x1BOM" or view.options.newline) end,
+  ["terminal:enter"] = function(view) view:input(view.terminal:keypad_keys_mode() == "application" and "\x1BOM" or view.options.newline) end,
   ["terminal:break"] = function(view) view:input("\x03") end,
   ["terminal:eof"] = function(view) view:input("\x04") end,
   ["terminal:suspend"] = function(view) view:input("\x1A") end,
@@ -1018,7 +1123,17 @@ command.add(active_terminal_predicate, {
   ["terminal:end-of-medium"] = function(view) view:input("\x19") end,
   ["terminal:file-separator"] = function(view) view:input("\x1C") end,
   ["terminal:group-separator"] = function(view) view:input("\x1D") end,
-  ["terminal:clear"] = function(view) view.terminal:clear() view:input(view.options.newline) end,
+  ["terminal:clear"] = function(view)
+    view.terminal:clear()
+    view.screen_rows = nil
+    clear_selection(view)
+  end,
+  ["terminal:reset"] = function(view)
+    view.terminal:reset()
+    view.mouse_buttons = {}
+    view.accumulated_scroll, view.sync_deadline = nil, nil
+    clear_selection(view)
+  end,
   ["terminal:close-tab"] = function(view) view:close() end
 });
 if system.get_primary_selection then -- check for master vs. 2.1.7
@@ -1045,6 +1160,10 @@ end, {
 ---Create or reveal the shared terminal drawer and give it keyboard focus.
 local function open_drawer()
   local view = core.terminal_view
+  if view and view.terminal and view.terminal:exited() ~= false then
+    view:close()
+    view = nil
+  end
   if not view then
     view = TerminalView()
     core.terminal_view = view
@@ -1055,6 +1174,7 @@ local function open_drawer()
     core.terminal_view_closed = nil
   end
   if core.active_view ~= view then core.set_active_view(view) end
+  return view
 end
 
 ---Return keyboard focus to the previous view if it is still displayed.
@@ -1086,26 +1206,55 @@ local function swap_drawer()
   end
 end
 
+---Open a shell or a dedicated agent tab in the current editor pane.
+local function open_tab(agent_command)
+  local view = TerminalView()
+  view.agent_command = agent_command
+  view.task_view = agent_command ~= nil
+  local node = core.root_view:get_active_node_default()
+  node:add_view(view)
+  node:update_layout()
+  view:update()
+  return view
+end
+
+---Use a supplied command or prompt for it before creating a terminal.
+local function with_command(label, text, run)
+  local function submit(value)
+    if type(value) == "string" and value:find("%S") then run(value) end
+  end
+  if text == nil then
+    core.command_view:enter(label, { submit = submit })
+  else
+    submit(text)
+  end
+end
+
+local function send_command(view, text)
+  view:input(text .. view.options.newline)
+end
+
 command.add(nil, {
   ["terminal:open-drawer"] = open_drawer,
   ["terminal:toggle-drawer"] = toggle_drawer,
   ["terminal:swap-drawer"] = swap_drawer,
   ["terminal:execute"] = function(text)
-    local function send_command(text)
+    with_command("Execute Command", text, function(value)
       if not core.terminal_view then open_drawer() end
       local target_view = core.active_view:is(TerminalView) and core.active_view or core.terminal_view
-      target_view:input(text .. target_view.options.newline)
-    end
-    if not text then
-      core.command_view:enter("Execute Command", { submit = send_command })
-    else
-      send_command(text)
-    end
+      send_command(target_view, value)
+    end)
   end,
-  ["terminal:open-tab"] = function()
-    local tv = TerminalView(config.plugins.terminal)
-    core.root_view:get_active_node_default():add_view(tv)
-  end
+  ["terminal:open-tab"] = function() open_tab() end,
+  ["terminal:run-command-in-tab"] = function(text)
+    with_command("Run Command in Tab", text, function(value) send_command(open_tab(), value) end)
+  end,
+  ["terminal:run-command-in-drawer"] = function(text)
+    with_command("Run Command in Drawer", text, function(value) send_command(open_drawer(), value) end)
+  end,
+  ["terminal:spawn-agent"] = function(text)
+    with_command("Spawn Agent", text, open_tab)
+  end,
 })
 command.add(function() return core.terminal_view and core.active_view ~= core.terminal_view end, {
   ["terminal:focus"] = open_drawer
@@ -1136,15 +1285,12 @@ keymap.add({
 })
 local keys = {
   ["return"] = "terminal:return",
-  ["ctrl+return"] = "terminal:return",
-  ["shift+return"] = "terminal:return",
-  ["keypad enter"] = "terminal:return",
-  ["ctrl+keypad enter"] = "terminal:return",
-  ["shift+keypad enter"] = "terminal:return",
+  ["keypad enter"] = "terminal:enter",
   ["enter"] = "terminal:enter",
   ["backspace"] = "terminal:backspace",
   ["shift+backspace"] = "terminal:backspace",
   ["delete"] = "terminal:delete",
+  ["insert"] = "terminal:insert",
   ["ctrl+backspace"] = "terminal:ctrl-backspace",
   ["alt+backspace"] = "terminal:alt-backspace",
   ["ctrl+shift+c"] = "terminal:copy",
@@ -1166,8 +1312,6 @@ local keys = {
   ["ctrl+down"] = "terminal:jump-down",
   ["ctrl+left"] = "terminal:jump-left",
   ["ctrl+right"] = "terminal:jump-right",
-  ["alt+left"] = "terminal:jump-left",
-  ["alt+right"] = "terminal:jump-right",
   ["home"] = "terminal:home",
   ["end"] = "terminal:end",
   ["f1"] = "terminal:f1",
@@ -1181,7 +1325,7 @@ local keys = {
   ["f9"] = "terminal:f9",
   ["f10"] = "terminal:f10",
   ["f11"] = "terminal:f11",
-  ["f12"] = "terminal:f11",
+  ["f12"] = "terminal:f12",
   ["escape"] = "terminal:escape",
   ["ctrl+a"] = "terminal:start-of-heading",
   ["ctrl+b"] = "terminal:start-of-text",
@@ -1190,9 +1334,7 @@ local keys = {
   ["ctrl+e"] = "terminal:enquiry",
   ["ctrl+f"] = "terminal:acknowledge",
   ["ctrl+g"] = "terminal:bell",
-  ["ctrl+h"] = "terminal:backspace",
   ["ctrl+i"] = "terminal:tab",
-  ["ctrl+j"] = "terminal:return",
   ["ctrl+k"] = "terminal:vertical-tab",
   ["ctrl+l"] = "terminal:redraw",
   ["ctrl+m"] = "terminal:carriage-feed",
@@ -1223,7 +1365,7 @@ if config.plugins.terminal.inversion_key then
   for i = string.byte('a'), string.byte('z') do
     local keymaps = {}
     for i,v in ipairs(keymap.map["ctrl+" .. string.char(i)] or {}) do
-      if not v:find("terminal") then
+      if type(v) == "string" and not v:find("terminal") then
         table.insert(keymaps, "terminal:" .. v)
         commands["terminal:" .. v] = function(...) command.perform(v, ...) end
       end
@@ -1234,6 +1376,49 @@ if config.plugins.terminal.inversion_key then
   end
   command.add(active_terminal_predicate, commands)
   keymap.add(settings)
+end
+
+-- Keep editor tab navigation and the outer command palette accessible from a PTY.
+local editor_keys = { ["ctrl+tab"] = true, ["ctrl+shift+tab"] = true, ["ctrl+shift+p"] = true }
+local previous_key_pressed = keymap.on_key_pressed
+function keymap.on_key_pressed(key, ...)
+  local active, view = active_terminal_predicate()
+  if not active or modifiers.map[key] or key:find("click", 1, true) or key:find("wheel", 1, true) then
+    return previous_key_pressed(key, ...)
+  end
+  local mods = keymap.modkeys
+  local parts = {}
+  for _, name in ipairs(modifiers.keys) do
+    if mods[name] then parts[#parts + 1] = name end
+  end
+  parts[#parts + 1] = key
+  local stroke = table.concat(parts, "+")
+  local omitted = config.plugins.terminal.omit_escapes
+  if mods.cmd or mods.super or editor_keys[stroke] or (omitted and stroke:find(omitted)) then
+    return previous_key_pressed(key, ...)
+  end
+  local action
+  local bindings = keymap.map[stroke]
+  for _, binding in ipairs(bindings or {}) do
+    if type(binding) == "string" and binding:match("^terminal:") then
+      action = binding
+      break
+    end
+  end
+  local inversion = config.plugins.terminal.inversion_key
+  if not action and bindings and inversion and mods[inversion] and mods.ctrl
+    and #parts == 3 and key:match("^[a-z]$") then
+    return previous_key_pressed(key, ...)
+  end
+  local printable = #key == 1 or key == "space"
+  local text_input = printable and (mods.altgr or not (mods.ctrl or mods.alt or mods.option))
+  local bytes = not action and not text_input and keyboard.encode(key, mods)
+  if not action and not text_input and not bytes then return previous_key_pressed(key, ...) end
+  if core.root_view.on_key_pressed and core.root_view:on_key_pressed(stroke, ...) then return true end
+  if action then command.perform(action, ...)
+  elseif bytes then view:input(bytes)
+  else return false end -- SDL supplies layout-aware text and IME composition.
+  return true
 end
 
 return {

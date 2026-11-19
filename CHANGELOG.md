@@ -1,6 +1,13 @@
 # Unreleased
 
+* Run commands in a new shell tab or the shared drawer, or launch a dedicated agent tab with a configurable exit policy.
+* Add Terminal: Reset to restore emulator modes. Terminal: Clear now leaves pending shell input unsubmitted.
+
 * Terminal text, background, cursor and ANSI colors follow the active editor theme.
+* Advertise truecolor to shells and tasks, preserve application RGB colors by default, and report the theme's foreground and background.
+* Improve rendering of animated text, faint and reverse video, wide characters and combining marks.
+* Support synchronized screen updates and correct cursor placement, wrapping and scrolling in full-screen applications.
+* Forward Alt shortcuts, modified navigation and function keys to the focused terminal. This lets Alt+X open the command palette in `pragtical tui`.
 * `Alt+T` toggles the drawer. `Alt+Shift+T` opens or focuses it.
 * Added reusable task terminals with interactive input, streamed output and exit callbacks.
 * Windows terminals now pass command arguments and the working directory to the child process.
