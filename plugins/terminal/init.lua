@@ -63,6 +63,7 @@ local default_config = {
   -- * MesloLGS NF Regular - https://github.com/romkatv/powerlevel10k-media
   -- You should use both, Julia as main and MesloLGS as fallback.
   font = style.code_font,
+  blink_caret = true,
   draw_cell_graphics = true,
   -- padding around the edges of the terminal
   padding = { x = 0, y = 0 },
@@ -110,6 +111,11 @@ default_config.config_spec = set_config_default_values {
       font_scales[terminal.font] = SCALE
       terminal.bold_font = terminal.font:copy(terminal.font:get_size(), { bold = true })
     end
+  },
+  {
+    label = "Caret Blinking",
+    description = "Allow applications to blink the idle caret using the editor's cursor blinking settings.",
+    path = "blink_caret", type = "TOGGLE"
   },
   {
     label = "Draw Box and Block Symbols",
@@ -471,6 +477,16 @@ local function update_font(self)
   return true
 end
 
+local function cursor_blinks(mode)
+  return mode == "blinking" and config.plugins.terminal.blink_caret and not config.disable_blink
+end
+
+local function restart_cursor_blink(view)
+  view.cursor_blink_start = system.get_time()
+  view.cursor_blink_visible = true
+  core.redraw = true
+end
+
 function TerminalView:update()
   if self.closed then return end
   TerminalView.super.update(self)
@@ -517,19 +533,20 @@ function TerminalView:update()
         self.focused = core.active_view == self
         self.modified_since_last_focus = false
         self.terminal:focused(self.focused)
+        if self.focused then restart_cursor_blink(self) end
       end
-      local x, y, mode = self.terminal:cursor()
-      if not self.exit_status and mode == "blinking" and not config.disable_blink then
-        local T, t0 = config.blink_period, core.blink_start
-        local ta, tb = core.blink_timer, system.get_time()
-        if ((tb - t0) % T < T / 2) ~= ((ta - t0) % T < T / 2) then
+      local scrollback, total_scrollback = self.terminal:scrollback()
+      local _, _, mode = self.terminal:cursor()
+      if self.focused and scrollback == 0 and not self.exit_status and cursor_blinks(mode) then
+        local period = config.blink_period
+        local phase = (system.get_time() - self.cursor_blink_start) % period
+        local visible = phase < period / 2
+        if self.cursor_blink_visible ~= visible then
+          self.cursor_blink_visible = visible
           core.redraw = true
         end
-        core.blink_timer = tb
-        if core.request_update and self.focused
-          and system.window_has_focus(core.window) and self.terminal:scrollback() == 0
-        then
-          core.request_update(T / 2 - (tb - t0) % (T / 2))
+        if core.request_update and system.window_has_focus(core.window) then
+          core.request_update(period / 2 - phase % (period / 2))
         end
       end
       if self.scrolling_offscreen then
@@ -543,7 +560,6 @@ function TerminalView:update()
           core.request_update(self.last_scroll_time + self.options.scrolling_speed - now)
         end
       end
-      local scrollback, total_scrollback = self.terminal:scrollback()
       -- 0 should be if we're at max scrollback. 1 should be if we're at 0 scrollback.
       self.v_scrollbar:set_size(self.position.x, self.position.y, self.size.x, self.size.y, self:get_scrollable_size())
       self.v_scrollbar:set_percent(total_scrollback > 0 and 1 - scrollback / total_scrollback or 1)
@@ -676,8 +692,8 @@ function TerminalView:draw()
   local cursor_x, cursor_y, mode, shape = table.unpack(self.screen_cursor)
   local scrollback = self.screen_scrollback
   local show_cursor = not self.exit_status and mode ~= "hidden" and core.active_view == self and scrollback == 0
-  if mode == "blinking" and not config.disable_blink then
-    show_cursor = show_cursor and (core.blink_timer - core.blink_start) % config.blink_period < config.blink_period / 2
+  if cursor_blinks(mode) then
+    show_cursor = show_cursor and self.cursor_blink_visible ~= false
   end
   local origin = self.position.x + self.options.padding.x
   local y = self.position.y + self.options.padding.y
@@ -962,6 +978,7 @@ function TerminalView:input(text)
   if self.closed or (self.task_view and not self.task) then return false end
   if self.terminal then
     self.terminal:input(text)
+    if core.active_view == self then restart_cursor_blink(self) end
     if self.terminal:scrollback() ~= 0 then self.terminal:scrollback(0) end
     self:shift_selection_update()
     core.redraw = true

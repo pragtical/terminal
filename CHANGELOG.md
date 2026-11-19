@@ -8,6 +8,7 @@
 * Improve rendering of animated text, faint and reverse video, wide characters and combining marks.
 * Draw block graphics and box borders to the terminal grid by default. Turn off **Draw Box and Block Symbols** to use the terminal font.
 * Open terminals follow changes to the editor code font when Use Custom Font is disabled.
+* Keep the caret visible during keyboard input. Idle blinking follows the editor settings and can be turned off under **Terminal → Caret Blinking**.
 * Support synchronized screen updates and correct cursor placement, wrapping and scrolling in full-screen applications.
 * Forward Alt shortcuts, modified navigation and function keys to the focused terminal. This lets Alt+X open the command palette in `pragtical tui`.
 * Forward Ctrl+wheel to applications that request mouse wheel input. At a normal shell prompt the editor handles zoom.
