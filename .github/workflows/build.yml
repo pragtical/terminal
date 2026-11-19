@@ -9,7 +9,7 @@ jobs:
       version: ${{ steps.setup_release.outputs.version }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - name: Setup Release
         id: setup_release
@@ -32,7 +32,7 @@ jobs:
     defaults: { run: { shell: bash } }
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with: { fetch-depth: 0, submodules: true }
       - name: Install Cross Compiler
         run: |
@@ -42,10 +42,10 @@ jobs:
           BIN=libterminal.x86_64-linux.so ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-linux'"'
           BIN=libterminal.aarch64-linux.so CC=aarch64-linux-gnu-gcc ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-aarch64-linux'"'
       - name: Upload x86_64 Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: { name: "Linux_x86_64", path: "libterminal.x86_64-linux.so" }
       - name: Upload aarch64 Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: { name: "Linux_aarch64", path: "libterminal.aarch64-linux.so" }
 
   build_windows:
@@ -55,13 +55,13 @@ jobs:
     defaults: { run: { shell: bash } }
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with: { fetch-depth: 0, submodules: true }
       - name: Build Windows
         env: { GITHUB_TOKEN: "${{ github.token }}" }
-        run: sudo apt-get install mingw-w64 && BIN=libterminal.x86_64-windows.dll CC=x86_64-w64-mingw32-gcc ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-windows'"'
+        run: sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-win32 && BIN=libterminal.x86_64-windows.dll CC=x86_64-w64-mingw32-gcc ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-windows'"'
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: { name: "Windows", path: "libterminal.x86_64-windows.dll" }
 
   build_macos:
@@ -71,7 +71,7 @@ jobs:
       CC: clang
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with: { fetch-depth: 0, submodules: true }
       - name: Build MacOS
         env: { GITHUB_TOKEN: "${{ github.token }}" }
@@ -80,10 +80,10 @@ jobs:
           BIN=libterminal.x86_64-darwin.so MACOSX_DEPLOYMENT_TARGET=10.11 ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-x86_64-darwin'"'
           BIN=libterminal.aarch64-darwin.so MACOSX_DEPLOYMENT_TARGET=11.0 CC=clang CFLAGS="-arch arm64" ./build.sh -O3 -DLIBTERMINAL_VERSION='"'${{ needs.version.outputs.version }}-aarch64-darwin'"'
       - name: Upload x86_64 Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: { name: "MacOS_x86_64", path: "libterminal.x86_64-darwin.so" }
       - name: Upload aarch64 Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with: { name: "MacOS_aarch64", path: "libterminal.aarch64-darwin.so" }
 
 
@@ -93,10 +93,10 @@ jobs:
     environment: Release
     steps:
     - name: Checkout Code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with: { fetch-depth: 0 }
     - name: Download Artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with: { path: "." }
     - name: Perform Release
       env:
