@@ -204,6 +204,7 @@ typedef struct {
   mode_e mode;                                       // The mode the terminal is in.
   int reporting_focus;                               // Enables/disbles reporting focus.
   char name[LIBTERMINAL_NAME_MAX];                   // Window name, set with OS command.
+  int child_exited, exit_code, exit_signal, output_eof;
   char buffered_sequence[LIBTERMINAL_CHUNK_SIZE];
   #if _WIN32
     PROCESS_INFORMATION process_information;
@@ -214,7 +215,8 @@ typedef struct {
     int nonblocking_buffer_length;
     HANDLE nonblocking_buffer_mutex;
     HANDLE nonblocking_thread;
-    int closing;
+    volatile LONG closing;
+    HANDLE closing_console, job;
   #else
     int master;                                        // FD for pty.
     pid_t pid;                                         // pid for shell.
@@ -302,6 +304,7 @@ static int terminal_scrollback(terminal_t* terminal, int target) {
 static int terminal_output(terminal_t* terminal, const char* str, int len);
 static void terminal_input(terminal_t* terminal, const char* str, int len) {
   if (terminal->mode == MODE_PTY) {
+    if (terminal->child_exited) return;
     #ifdef _WIN32
       WriteFile(terminal->topty, str, len, NULL, NULL);
     #else
@@ -1088,12 +1091,20 @@ static int terminal_output(terminal_t* terminal, const char* str, int len) {
 }
 
 #ifdef _WIN32
-  static DWORD windows_nonblocking_thread_callback(void* data) {
+  static DWORD WINAPI close_console_worker(void* console) {
+    ClosePseudoConsole((HPCON)console);
+    return 0;
+  }
+
+  static DWORD WINAPI windows_nonblocking_thread_callback(void* data) {
     terminal_t* terminal = (terminal_t*)data;
     char chunk_buffer[LIBTERMINAL_CHUNK_SIZE];
     while (1) {
       DWORD bytes_read;
-      if (sizeof(chunk_buffer) - terminal->nonblocking_buffer_length > 0 || terminal->closing) {
+      WaitForSingleObject(terminal->nonblocking_buffer_mutex, INFINITE);
+      DWORD capacity = sizeof(chunk_buffer) - terminal->nonblocking_buffer_length;
+      ReleaseMutex(terminal->nonblocking_buffer_mutex);
+      if (capacity || terminal->closing) {
         if (terminal->closing) {
           while (1) {
             if (!ReadFile(terminal->frompty, chunk_buffer, sizeof(chunk_buffer), &bytes_read, NULL) || bytes_read == 0)
@@ -1101,7 +1112,7 @@ static int terminal_output(terminal_t* terminal, const char* str, int len) {
           }
           return 0;
         }
-        if (!ReadFile(terminal->frompty, chunk_buffer, sizeof(chunk_buffer) - terminal->nonblocking_buffer_length, &bytes_read, NULL))
+        if (!ReadFile(terminal->frompty, chunk_buffer, capacity, &bytes_read, NULL))
           break;
         if (bytes_read > 0) {
           WaitForSingleObject(terminal->nonblocking_buffer_mutex, INFINITE);
@@ -1123,23 +1134,26 @@ static int terminal_update(terminal_t* terminal, void (*callback)(char*, int, vo
   int len, at_least_one = 0;
   #ifdef _WIN32
     WaitForSingleObject(terminal->nonblocking_buffer_mutex, INFINITE);
-    if (terminal->nonblocking_buffer_length > 0) {
-      *total_shifts += terminal_output(terminal, terminal->nonblocking_buffer, terminal->nonblocking_buffer_length);
-      if (callback)
-        callback(terminal->nonblocking_buffer, terminal->nonblocking_buffer_length, data);
-      at_least_one = 1;
-    }
+    len = terminal->nonblocking_buffer_length;
+    memcpy(chunk, terminal->nonblocking_buffer, len);
     terminal->nonblocking_buffer_length = 0;
     ReleaseMutex(terminal->nonblocking_buffer_mutex);
-    return at_least_one;
+    if (len) {
+      *total_shifts += terminal_output(terminal, chunk, len);
+      if (callback) callback(chunk, len, data);
+    }
+    return len > 0;
   #else
     int chunks_processed = 0;
     do {
       len = read(terminal->master, chunk, sizeof(chunk));
       if (len == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
         return at_least_one;
-      if (len <= 0)
+      if (len <= 0) {
+        if (len < 0 && errno == EINTR) continue;
+        terminal->output_eof = 1;
         return at_least_one ? at_least_one : -1;
+      }
       *total_shifts += terminal_output(terminal, chunk, len);
       if (callback)
         callback(chunk, len, data);
@@ -1148,6 +1162,15 @@ static int terminal_update(terminal_t* terminal, void (*callback)(char*, int, vo
   #endif
   return -1;
 }
+
+#ifndef _WIN32
+static void kill_process_group(terminal_t* terminal) {
+  if (terminal->pid > 0 && (!terminal->child_exited || !terminal->output_eof)) {
+    if (kill(-terminal->pid, SIGKILL) < 0 && errno == ESRCH && !terminal->child_exited)
+      kill(terminal->pid, SIGKILL);
+  }
+}
+#endif
 
 static int terminal_close(terminal_t* terminal) {
   terminal_clear_scrollback_buffer(terminal);
@@ -1163,14 +1186,26 @@ static int terminal_close(terminal_t* terminal) {
     #if _WIN32
       // This has to be first, because if we don't drain the buffer in our nonblocking_thread,
       // this call can hang. (SIGH).
-      terminal->closing = 1;
+      InterlockedExchange(&terminal->closing, 1);
+      if (terminal->process_information.hProcess && !terminal->child_exited)
+        TerminateProcess(terminal->process_information.hProcess, 1);
+      if (terminal->job) {
+        CloseHandle(terminal->job);
+        terminal->job = NULL;
+      }
       if (terminal->hpcon) {
         ClosePseudoConsole(terminal->hpcon);
         terminal->hpcon = NULL;
       }
       if (terminal->nonblocking_thread) {
-        TerminateThread(terminal->nonblocking_thread, 0);
+        WaitForSingleObject(terminal->nonblocking_thread, INFINITE);
+        CloseHandle(terminal->nonblocking_thread);
         terminal->nonblocking_thread = NULL;
+      }
+      if (terminal->closing_console) {
+        WaitForSingleObject(terminal->closing_console, INFINITE);
+        CloseHandle(terminal->closing_console);
+        terminal->closing_console = NULL;
       }
       if (terminal->topty) {
         CloseHandle(terminal->topty);
@@ -1185,22 +1220,20 @@ static int terminal_close(terminal_t* terminal) {
         terminal->nonblocking_buffer_mutex = NULL;
       }
       if (terminal->process_information.hProcess) {
-        TerminateProcess(terminal->process_information.hProcess, 1);
+        CloseHandle(terminal->process_information.hProcess);
+        CloseHandle(terminal->process_information.hThread);
         terminal->process_information.hProcess = NULL;
       }
     #else
-      if (terminal->pid) {
-        if (terminal->master) {
-          close(terminal->master);
-          terminal->master = 0;
-          kill(terminal->pid, SIGHUP);
-        }
-        int status;
-        if (waitpid(terminal->pid, &status, WNOHANG))
-          terminal->pid = 0;
-        else
-          return -1;
+      kill_process_group(terminal);
+      if (terminal->master >= 0) {
+        close(terminal->master);
+        terminal->master = -1;
       }
+      if (terminal->pid > 0 && !terminal->child_exited) {
+        while (waitpid(terminal->pid, NULL, 0) < 0 && errno == EINTR) {}
+      }
+      terminal->pid = 0;
     #endif
   }
   return 0;
@@ -1208,11 +1241,6 @@ static int terminal_close(terminal_t* terminal) {
 
 static void terminal_free(terminal_t* terminal) {
   terminal_close(terminal);
-  #ifdef _WIN32
-  #else
-    if (terminal->pid)
-      kill(terminal->pid, SIGKILL);
-  #endif
   free(terminal);
 }
 
@@ -1222,7 +1250,7 @@ static void terminal_resize(terminal_t* terminal, int columns, int lines) {
   if (terminal->mode == MODE_PTY) {
     #ifdef _WIN32
       COORD size = { columns, lines };
-      ResizePseudoConsole(terminal->hpcon, size);
+      if (terminal->hpcon) ResizePseudoConsole(terminal->hpcon, size);
     #else
       struct winsize size = { .ws_row = lines, .ws_col = columns, .ws_xpixel = 0, .ws_ypixel = 0 };
       ioctl(terminal->master, TIOCSWINSZ, &size);
@@ -1278,7 +1306,51 @@ static int set_error_step(const char* step) { strncpy(error_step, step, sizeof(e
   static const char* terminal_get_last_error() { return error_step; }
 #endif
 
-static terminal_t* terminal_new(int columns, int lines, int scrollback_limit, const char* term_env, const char* pathname, const char** argv, const char** environment) {
+#ifdef _WIN32
+// Encode the CRT argv convention, including empty arguments and trailing slashes.
+// cmd /s /c receives its final command as shell text inside one outer quote.
+static wchar_t* windows_command_line(const char** argv) {
+  size_t size = 1;
+  for (int i = 0; argv[i]; ++i) size += 2 * strlen(argv[i]) + 3;
+  char* utf8 = malloc(size);
+  if (!utf8) return NULL;
+  char* out = utf8;
+  const char* base = argv[0];
+  for (const char* c = base; *c; ++c) if (*c == '\\' || *c == '/') base = c + 1;
+  int cmd = !_stricmp(base, "cmd.exe") || !_stricmp(base, "cmd");
+  for (int i = 0; argv[i]; ++i) {
+    if (i) *out++ = ' ';
+    const char* arg = argv[i];
+    int script = cmd && i && !argv[i+1] && (!_stricmp(argv[i-1], "/c") || !_stricmp(argv[i-1], "/k"));
+    int quote = script || !*arg || strpbrk(arg, " \t\"") != NULL;
+    if (quote) *out++ = '"';
+    if (script) {
+      memcpy(out, arg, strlen(arg));
+      out += strlen(arg);
+    } else {
+      while (*arg) {
+        size_t slashes = strspn(arg, "\\");
+        arg += slashes;
+        if (quote && (*arg == '"' || !*arg)) slashes *= 2;
+        while (slashes--) *out++ = '\\';
+        if (*arg == '"') *out++ = '\\';
+        if (*arg) *out++ = *arg++;
+      }
+    }
+    if (quote) *out++ = '"';
+  }
+  *out = 0;
+  wchar_t* result = calloc(size, sizeof(wchar_t));
+  if (result && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, result, size)) {
+    free(result);
+    result = NULL;
+  }
+  free(utf8);
+  return result;
+}
+#endif
+
+static terminal_t* terminal_new(int columns, int lines, int scrollback_limit, const char* term_env, const char* pathname, const char** argv, const char** environment, const char* cwd) {
   terminal_t* terminal = calloc(sizeof(terminal_t), 1);
   for (int i = 0; i < VIEW_MAX; ++i) {
     for (int j = 0; j < 256; ++j)
@@ -1296,53 +1368,57 @@ static terminal_t* terminal_new(int columns, int lines, int scrollback_limit, co
     #ifdef _WIN32
       last_error_code = 0;
       HRESULT result = S_OK;
-      SECURITY_ATTRIBUTES no_sec = { .nLength = sizeof(SECURITY_ATTRIBUTES), .bInheritHandle = TRUE, .lpSecurityDescriptor = NULL };
-      HANDLE out_pipe_pseudo_console_side, in_pipe_pseudo_console_side;
+      HANDLE console_out = NULL, console_in = NULL;
+      wchar_t* commandline = NULL;
+      wchar_t* directory = NULL;
+      STARTUPINFOEXW startup = {0};
+      int attributes_ready = 0;
+      SIZE_T bytes = 0;
       COORD size = { columns, lines };
-      if ((!CreatePipe(&in_pipe_pseudo_console_side, &terminal->topty, &no_sec, 0) || !CreatePipe(&terminal->frompty, &out_pipe_pseudo_console_side, &no_sec, 0)) && set_error_step("create pipes"))
-        goto error;
-      result = CreatePseudoConsole(size, in_pipe_pseudo_console_side, out_pipe_pseudo_console_side, 0, &terminal->hpcon);
-      if (FAILED(result) && set_error_step("create pseudoconsole"))
-        goto error;
+      if (!CreatePipe(&console_in, &terminal->topty, NULL, 0) ||
+          !CreatePipe(&terminal->frompty, &console_out, NULL, 0)) goto error;
+      result = CreatePseudoConsole(size, console_in, console_out, 0, &terminal->hpcon);
+      CloseHandle(console_in); console_in = NULL;
+      CloseHandle(console_out); console_out = NULL;
+      if (FAILED(result)) goto error;
       terminal->nonblocking_buffer_mutex = CreateMutex(NULL, FALSE, NULL);
-      if (!terminal->nonblocking_buffer_mutex && set_error_step("create mutex"))
-        goto error;
-
-      HANDLE handles_to_inherit[] = { in_pipe_pseudo_console_side, out_pipe_pseudo_console_side };
-      STARTUPINFOEXW si_ex = {0};
-      si_ex.StartupInfo.cb = sizeof(STARTUPINFOEXW);
-      si_ex.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
-      si_ex.StartupInfo.hStdInput = NULL;
-      si_ex.StartupInfo.hStdOutput = NULL;
-      si_ex.StartupInfo.hStdError = NULL;
-      size_t list_size;
-      // Create the appropriately sized thread attribute list
-      InitializeProcThreadAttributeList(NULL, 2, 0, &list_size);
-      si_ex.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(list_size);
-      BOOL success = InitializeProcThreadAttributeList(si_ex.lpAttributeList, 2, 0, (PSIZE_T)&list_size) &&
-        UpdateProcThreadAttribute(si_ex.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, terminal->hpcon, sizeof(HPCON), NULL, NULL) &&
-        UpdateProcThreadAttribute(si_ex.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles_to_inherit, sizeof(handles_to_inherit), NULL, NULL);
-      if (!success && set_error_step("update proc attribute list")) {
-        DeleteProcThreadAttributeList(si_ex.lpAttributeList);
-        free(si_ex.lpAttributeList);
-        goto error;
+      if (!terminal->nonblocking_buffer_mutex) goto error;
+      startup.StartupInfo.cb = sizeof(startup);
+      startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+      InitializeProcThreadAttributeList(NULL, 1, 0, &bytes);
+      startup.lpAttributeList = malloc(bytes);
+      if (!startup.lpAttributeList || !InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &bytes)) goto error;
+      attributes_ready = 1;
+      if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+          terminal->hpcon, sizeof(HPCON), NULL, NULL)) goto error;
+      commandline = windows_command_line(argv);
+      if (cwd) {
+        size_t capacity = strlen(cwd) + 1;
+        directory = calloc(capacity, sizeof(wchar_t));
+        if (!directory || !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, cwd, -1, directory, capacity)) goto error;
       }
-
-      int len = MultiByteToWideChar(CP_UTF8, 0, pathname, -1, NULL, 0);
-      wchar_t* commandline = malloc(sizeof(wchar_t)*(len+1));
-      len = MultiByteToWideChar(CP_UTF8, 0, pathname, -1, commandline, len);
-      success = CreateProcessW(NULL, commandline, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT, (void*)environment[0], NULL, &si_ex.StartupInfo, &terminal->process_information);
-      DeleteProcThreadAttributeList(si_ex.lpAttributeList);
-      free(si_ex.lpAttributeList);
-      free(commandline);
-      if (!success && set_error_step("create process"))
-        goto error;
+      if (!commandline || !CreateProcessW(NULL, commandline, NULL, NULL, FALSE,
+          EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
+          (void*)environment[0], directory, &startup.StartupInfo, &terminal->process_information)) goto error;
+      terminal->job = CreateJobObjectW(NULL, NULL);
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
+      limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      if (!terminal->job || !SetInformationJobObject(terminal->job, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) ||
+          !AssignProcessToJobObject(terminal->job, terminal->process_information.hProcess) ||
+          ResumeThread(terminal->process_information.hThread) == (DWORD)-1) goto error;
       terminal->nonblocking_thread = CreateThread(NULL, 0, windows_nonblocking_thread_callback, terminal, 0, NULL);
       if (!terminal->nonblocking_thread && set_error_step("create thread"))
         goto error;
       error:
+      last_error_code = FAILED(result) ? HRESULT_CODE(result) : GetLastError();
+      if (attributes_ready) DeleteProcThreadAttributeList(startup.lpAttributeList);
+      free(startup.lpAttributeList);
+      free(commandline);
+      free(directory);
+      if (console_in) CloseHandle(console_in);
+      if (console_out) CloseHandle(console_out);
       if (!terminal->nonblocking_thread) {
-        last_error_code = FAILED(result) ? HRESULT_CODE(result) : GetLastError();
+        set_error_step("start terminal");
         terminal_close(terminal);
         free(terminal);
         return NULL;
@@ -1367,14 +1443,15 @@ static terminal_t* terminal_new(int columns, int lines, int scrollback_limit, co
         return NULL;
       }
       if (!terminal->pid) {
+        if (cwd && chdir(cwd) < 0) { perror(cwd); _exit(126); }
         setenv("TERM", term_env, 1);
-        for (int i = 0; i < 256 && environment[i]; i += 2)
+        for (int i = 0; environment[i]; i += 2)
           setenv(environment[i], environment[i+1], 1);
         execvp(pathname,  (char** const)argv);
-        exit(-1);
-        return NULL;
+        perror(pathname);
+        _exit(127);
       }
-      int flags = fcntl(terminal->master, F_GETFD, 0);
+      int flags = fcntl(terminal->master, F_GETFL, 0);
       fcntl(terminal->master, F_SETFL, flags | O_NONBLOCK);
     #endif
   }
@@ -1521,47 +1598,62 @@ static int f_terminal_new(lua_State* L) {
   int scrollback_limit = luaL_checkinteger(L, 3);
   const char* term_env = luaL_checkstring(L, 4);
   const char* path = luaL_checkstring(L, 5);
-  char* arguments[256] = {0};
-  char* environment[256] = {0};
-  arguments[0] = (char*)path;
-  arguments[1] = NULL;
-  if (lua_type(L, 6) == LUA_TTABLE) {
-    for (int i = 0; i < 255; ++i) {
-      lua_rawgeti(L, 6, i+1);
-      if (!lua_isnil(L, -1)) {
-        const char* str = luaL_checkstring(L, -1);
-        arguments[i+1] = strdup(str);
-        lua_pop(L, 1);
-      } else {
-        lua_pop(L, 1);
-        arguments[i+1] = NULL;
-        break;
-      }
+  const char* cwd = luaL_optstring(L, 9, NULL);
+  size_t nargs = 0, envcount = 0;
+  if (lua_istable(L, 6)) {
+    for (;;) {
+      lua_rawgeti(L, 6, nargs + 1);
+      if (lua_isnil(L, -1)) { lua_pop(L, 1); break; }
+      luaL_checktype(L, -1, LUA_TSTRING);
+      lua_pop(L, 1);
+      ++nargs;
     }
   }
   #if _WIN32
     size_t envlen;
-    const char* env = luaL_checklstring(L, 7, &envlen);
-    LPWSTR utf16_env = calloc(envlen, sizeof(WCHAR));
-    MultiByteToWideChar(CP_UTF8, 0, env, envlen, utf16_env, envlen);
-    environment[0] = (char*) utf16_env;
+    const char* block = luaL_checklstring(L, 7, &envlen);
+    envcount = 1;
   #else
     luaL_checktype(L, 7, LUA_TTABLE);
     lua_pushnil(L);
-    int i = 0;
-    while (lua_next(L, 7) != 0 && i < 255) {
-      environment[i] = strdup(lua_tostring(L, -2));
-      environment[i+1] = strdup(lua_tostring(L, -1));
-      i = i + 2;
+    while (lua_next(L, 7)) {
+      luaL_checktype(L, -2, LUA_TSTRING);
+      luaL_checktype(L, -1, LUA_TSTRING);
+      envcount += 2;
+      lua_pop(L, 1);
+    }
+  #endif
+  const char** arguments = calloc(nargs + 2 + envcount + 1, sizeof(*arguments));
+  if (!arguments) return luaL_error(L, "out of memory");
+  const char** environment = arguments + nargs + 2;
+  arguments[0] = path;
+  for (size_t i = 0; i < nargs; ++i) {
+    lua_rawgeti(L, 6, i + 1);
+    arguments[i + 1] = lua_tostring(L, -1);
+    lua_pop(L, 1);
+  }
+  #if _WIN32
+    wchar_t* env16 = calloc(envlen + 2, sizeof(wchar_t));
+    if (!env16 || (envlen && !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, block, envlen, env16, envlen))) {
+      free(arguments); free(env16);
+      return luaL_error(L, "invalid environment block");
+    }
+    environment[0] = (const char*)env16;
+  #else
+    size_t i = 0;
+    lua_pushnil(L);
+    while (lua_next(L, 7)) {
+      environment[i++] = lua_tostring(L, -2);
+      environment[i++] = lua_tostring(L, -1);
       lua_pop(L, 1);
     }
   #endif
   int debug = lua_toboolean(L, 8);
-  terminal_t* terminal = terminal_new(x, y, scrollback_limit, term_env, path, (const char**)arguments, (const char**)environment);
-  for (int i = 1; i < 256 && arguments[i]; ++i)
-    free(arguments[i]);
-  for (int i = 0; i < 256 && environment[i]; ++i)
-    free(environment[i]);
+  terminal_t* terminal = terminal_new(x, y, scrollback_limit, term_env, path, arguments, environment, cwd);
+  #if _WIN32
+    free(env16);
+  #endif
+  free(arguments);
   if (!terminal)
     return luaL_error(L, "error creating terminal: %s", terminal_get_last_error());
   terminal->debug = debug;
@@ -1580,7 +1672,7 @@ static int f_terminal_getenv(lua_State* L) {
   while (wcslen(envp) > 0) {
     const char* str = lua_toutf8(L, envp);
     if (str) {
-      const char* equal = strstr(str, "=");
+      const char* equal = strchr(str + (*str == '='), '=');
       lua_pushlstring(L, str, equal - str);
       lua_pushstring(L, equal + 1);
       lua_rawset(L, table);
@@ -1609,8 +1701,22 @@ static void chunk_update(char* buf, int len, void* L) {
   lua_pushlstring(L, buf, len);
   lua_call(L, 1, 0);
 }
+static void push_chunk(char* buf, int len, void* state) {
+  lua_pushlstring((lua_State*)state, buf, len);
+}
+
 static int f_terminal_update(lua_State* L){
   int status, total_shifts = 0;
+  if (lua_type(L, 2) == LUA_TBOOLEAN && lua_toboolean(L, 2)) {
+    int top = lua_gettop(L);
+    luaL_checkstack(L, LIBTERMINAL_MAX_CHUNKS_PROCESSED + 3, "read terminal output");
+    terminal_update(lua_toterminal(L, 1), push_chunk, L, &total_shifts);
+    int chunks = lua_gettop(L) - top;
+    if (chunks) lua_concat(L, chunks); else lua_pushnil(L);
+    if (chunks) lua_pushinteger(L, total_shifts); else lua_pushboolean(L, 0);
+    lua_pushvalue(L, -2);
+    return 2;
+  }
   if (lua_type(L, 2) == LUA_TFUNCTION)
     status = terminal_update(lua_toterminal(L, 1), chunk_update, L, &total_shifts);
   else
@@ -1643,22 +1749,69 @@ static int f_terminal_size(lua_State* L) {
 
 static int f_terminal_exited(lua_State* L) {
   terminal_t* terminal = lua_toterminal(L, 1);
+  if (terminal->mode == MODE_DUMMY) { lua_pushboolean(L, 0); return 1; }
+  if (!terminal->child_exited) {
+    #if _WIN32
+      DWORD code;
+      if (WaitForSingleObject(terminal->process_information.hProcess, 0) == WAIT_OBJECT_0 &&
+          GetExitCodeProcess(terminal->process_information.hProcess, &code)) {
+        terminal->closing_console = CreateThread(NULL, 0, close_console_worker, terminal->hpcon, 0, NULL);
+        if (terminal->closing_console) {
+          terminal->hpcon = NULL;
+          terminal->child_exited = 1;
+          terminal->exit_code = (int)code;
+        }
+      }
+    #else
+      int status;
+      if (waitpid(terminal->pid, &status, WNOHANG) == terminal->pid) {
+        terminal->child_exited = 1;
+        terminal->exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        terminal->exit_signal = WIFSIGNALED(status) ? WTERMSIG(status) : -1;
+      }
+    #endif
+  }
   #if _WIN32
-    DWORD exit_code;
-    if (GetExitCodeProcess(terminal->process_information.hProcess, &exit_code) && exit_code != STILL_ACTIVE) {
-      lua_pushinteger(L, exit_code);
-    } else
-      lua_pushboolean(L, 0);
-  #else
-    int status;
-    if (waitpid(terminal->pid, &status, WNOHANG) > 0) {
-      lua_pushinteger(L, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
-      lua_pushinteger(L, WIFSIGNALED(status) ? WTERMSIG(status) : -1);
-      return 2;
-    } else
-      lua_pushboolean(L, 0);
+    terminal->output_eof = WaitForSingleObject(terminal->nonblocking_thread, 0) == WAIT_OBJECT_0
+      && terminal->nonblocking_buffer_length == 0;
   #endif
+  if (terminal->child_exited && (!lua_toboolean(L, 2) || terminal->output_eof)) {
+    lua_pushinteger(L, terminal->exit_code);
+    lua_pushinteger(L, terminal->exit_signal);
+    return 2;
+  }
+  lua_pushboolean(L, 0);
   return 1;
+}
+
+// Keep the normal screen and scrollback when starting another PTY in a task view.
+static int f_terminal_inherit_screen(lua_State* L) {
+  terminal_t* next = lua_toterminal(L, 1);
+  terminal_t* old = lua_toterminal(L, 2);
+  if (next == old) return 0;
+  terminal_resize(old, next->columns, next->lines);
+  view_t fresh = next->views[VIEW_NORMAL_BUFFER];
+  next->views[VIEW_NORMAL_BUFFER] = old->views[VIEW_NORMAL_BUFFER];
+  old->views[VIEW_NORMAL_BUFFER] = fresh;
+  terminal_clear_scrollback_buffer(next);
+  next->scrollback_buffer_start = old->scrollback_buffer_start;
+  next->scrollback_buffer_end = old->scrollback_buffer_end;
+  next->scrollback_total_lines = old->scrollback_total_lines;
+  old->scrollback_buffer_start = old->scrollback_buffer_end = old->scrollback_target = NULL;
+  old->scrollback_total_lines = 0;
+  return 0;
+}
+
+static int f_terminal_kill(lua_State* L) {
+  terminal_t* terminal = lua_toterminal(L, 1);
+  if (terminal->mode == MODE_PTY) {
+    #if _WIN32
+      if (terminal->job) TerminateJobObject(terminal->job, 1);
+    #else
+      kill_process_group(terminal);
+    #endif
+  }
+  return 0;
 }
 
 static int f_terminal_cursor(lua_State* L) {
@@ -1767,6 +1920,8 @@ static const luaL_Reg terminal_api[] = {
   { "lines",               f_terminal_lines                  },
   { "size",                f_terminal_size                   },
   { "update",              f_terminal_update                 },
+  { "inherit_screen",      f_terminal_inherit_screen          },
+  { "kill",                f_terminal_kill                   },
   { "exited",              f_terminal_exited                 },
   #if _WIN32
   { "getenv",              f_terminal_getenv                 },

@@ -11,7 +11,12 @@ local StatusView = require "core.statusview"
 local terminal_native = require "plugins.terminal.libterminal"
 
 local prev_scale = SCALE
-local default_shell =  os.getenv("SHELL") or (PLATFORM == "Windows" and os.getenv("COMSPEC")) or (PLATFORM == "Windows" and "c:\\windows\\system32\\cmd.exe" or "sh")
+local windows = PLATFORM == "Windows"
+local default_shell = os.getenv(windows and "COMSPEC" or "SHELL")
+if not default_shell or default_shell == "" then
+  default_shell = windows and [[C:\Windows\System32\cmd.exe]] or "sh"
+end
+
 local default_config = {
   -- outputs a terminal.log file of all the output of your shell
   debug = false,
@@ -24,7 +29,7 @@ local default_config = {
   omit_escapes = nil,
   -- the default shell to boot up in
   shell = default_shell,
-  -- the arguments to pass to your shell; does not work on windows.
+  -- Arguments passed to the shell on startup.
   arguments = { },
   -- the environmental variable to set on shell instantiation
   environment = { },
@@ -336,7 +341,10 @@ end
 
 local TerminalView = View:extend()
 
-function TerminalView:get_name() return (self.modified_since_last_focus and "* " or "") .. (self.terminal and self.terminal:name() or "Terminal") end
+function TerminalView:get_name()
+  if self.task_view then return "Task Terminal" end
+  return (self.modified_since_last_focus and "* " or "") .. (self.terminal and self.terminal:name() or "Terminal")
+end
 function TerminalView:supports_text_input() return true end
 
 function TerminalView:new(options)
@@ -344,13 +352,6 @@ function TerminalView:new(options)
   options = common.merge(common.merge({}, config.plugins.terminal), options)
   self.size.y = options.drawer_height
   self.options = options
-  if PLATFORM == "Windows" then
-    local t = {}
-    for k,v in pairs(common.merge(terminal_native.getenv(), options.environment)) do
-      table.insert(t, k .. "=" .. v)
-    end
-    self.options.environment = table.concat(t, "\0") .. "\0\0"
-  end
   self.cursor = "ibeam"
   self.scrollable = true
   self.last_size = { x = self.size.x, y = self.size.y }
@@ -361,7 +362,9 @@ end
 
 
 function TerminalView:shift_selection_update()
-  local shifts = self.terminal:update()
+  local callback = self.task and self.task.on_output
+  local shifts, chunk = self.terminal:update(callback ~= nil)
+  if chunk and callback then core.try(callback, chunk) end
   if shifts and not self.focused then self.modified_since_last_focus = true end
   if self.selection and shifts then
     self.selection[2] = self.selection[2] - shifts
@@ -374,11 +377,27 @@ function TerminalView:shift_selection_update()
 end
 
 
+local function native_environment(defaults, overrides)
+  if PLATFORM ~= "Windows" then return common.merge(defaults, overrides) end
+  local inherited, entries = {}, {}
+  for _, variables in ipairs { terminal_native.getenv(), defaults, overrides } do
+    for key, value in pairs(variables) do inherited[key:upper()] = key .. "=" .. value end
+  end
+  for _, entry in pairs(inherited) do entries[#entries + 1] = entry end
+  table.sort(entries, function(a, b) return a:upper() < b:upper() end)
+  return table.concat(entries, "\0") .. "\0\0"
+end
+
+local function new_process(view, executable, arguments, options)
+  return terminal_native.new(view.columns or 80, view.lines or 24,
+    view.options.scrollback_limit, view.options.term, executable, arguments,
+    native_environment(view.options.environment, options.environment), view.options.debug, options.cwd)
+end
+
 function TerminalView:spawn()
-  local cwd = system.getcwd()
-  system.chdir(core.root_project().path)
-  self.terminal = terminal_native.new(self.columns, self.lines, self.options.scrollback_limit, self.options.term, self.options.shell, self.options.arguments, self.options.environment, self.options.debug)
-  system.chdir(cwd)
+  self.terminal = new_process(self, self.options.shell, self.options.arguments,
+    { cwd = core.root_project().path })
+  if self.task_view then return end
   -- We make this weak so that any other method of closing the view gets caught up in the garbage collection and the coroutine doesn't count as a reference for gc purposes.
   local weak_table = { self = self }
   setmetatable(weak_table, { __mode = "v" })
@@ -431,7 +450,9 @@ end
 
 
 function TerminalView:update()
+  if self.closed then return end
   TerminalView.super.update(self)
+  if self.task_view and self.size.y <= 0 then return end
   if self.last_font_size and self.last_font_size ~= self.options.font:get_size() then
     self.options.bold_font:set_size(self.options.font:get_size())
   end
@@ -448,13 +469,12 @@ function TerminalView:update()
     end
   end
   if self.terminal then
-    core.redraw = self:shift_selection_update() or core.redraw
+    if not self.task_view then core.redraw = self:shift_selection_update() or core.redraw end
     if self.deferred_input then
       self:input(self.deferred_input)
       self.deferred_input = nil
     end
-    local exited = self.terminal:exited()
-    if exited == false then
+    if self.task_view or self.terminal:exited() == false then
       self.cursor = "ibeam"
       if self.terminal:mouse_tracking_mode()
          or self.v_scrollbar.hovering.track
@@ -839,6 +859,7 @@ end
 
 
 function TerminalView:input(text)
+  if self.task_view and not self.task then return false end
   if self.terminal then
     self.terminal:input(text)
     if self.terminal:scrollback() ~= 0 then self.terminal:scrollback(0) end
@@ -856,13 +877,56 @@ function TerminalView:on_text_input(text)
 end
 
 
-function TerminalView:close()
+---Run an argv command in an idle task view and retain earlier stages' output.
+---@param argv string[] Executable and literal arguments.
+---@param options {cwd?:string, environment?:table<string,string>, on_output?:fun(chunk:string), on_exit?:fun(status:integer)}
+function TerminalView:start_task(argv, options)
+  assert(self.task_view and not self.task and not self.closed, "Task terminal is busy or closed")
+  local child = new_process(self, argv[1], { table.unpack(argv, 2) }, options)
+  if self.terminal then
+    child:inherit_screen(self.terminal)
+    self.terminal:close()
+  end
+  self.terminal, self.task = child, options
+  self.deferred_input = nil
+  core.add_background_thread(function()
+    while self.task == options do
+      core.redraw = self:shift_selection_update() or core.redraw
+      local code, signal = child:exited(true)
+      if code ~= false then
+        self.task = nil
+        if options.on_exit then core.try(options.on_exit, signal and signal > 0 and 128 + signal or code) end
+        break
+      end
+      coroutine.yield(1 / 60)
+    end
+  end)
+end
+
+---Interrupt a task or kill its process group.
+---@param force boolean
+function TerminalView:stop_task(force)
+  if not self.task then return end
+  if force then self.terminal:kill() else self.terminal:input("\3") end
+end
+
+---Release the process and notify its owner when a terminal view is removed.
+---@param do_close function Removes the view from its node.
+function TerminalView:try_close(do_close)
+  local task = self.task
+  self.task, self.closed = nil, true
   if self.terminal then self.terminal:close() end
-  local node = core.root_view.root_node:get_node_for_view(self)
-  node:close_view(core.root_view.root_node, self)
+  self.terminal, self.routine = nil, nil
   if core.terminal_view == self then core.terminal_view = nil end
-  self.terminal = nil
-  self.routine = nil
+  do_close()
+  if task and task.on_exit then core.try(task.on_exit, 1) end
+end
+
+function TerminalView:close()
+  local root = core.root_view.root_node
+  local node = root:get_node_for_view(self)
+  if node then node:close_view(root, self)
+  elseif not self.closed then self:try_close(function() end) end
 end
 
 
@@ -1205,5 +1269,14 @@ if config.plugins.terminal.inversion_key then
 end
 
 return {
-  class = TerminalView
+  class = TerminalView,
+
+  ---Create an unattached, interactive task terminal owned by the caller.
+  ---@return plugins.terminal.view
+  new_task_view = function()
+    assert(terminal_native.inherit_screen, "Update the Terminal native library to use task terminals")
+    local view = TerminalView({ shell = "DUMMY", arguments = {} })
+    view.task_view = true
+    return view
+  end
 }

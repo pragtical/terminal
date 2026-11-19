@@ -22,9 +22,9 @@ A simple, and straightforward integrated terminal that presents itself as
 10. Locked scrollback regions.
 11. And more!
 
-By default, will use `$SHELL` as your shell if present. If not, we will use
-`sh` on linux and mac (though this is configurable), and
-`%COMSPEC%` or `c:\windows\system32\cmd.exe` on windows.
+Windows uses `%COMSPEC%` by default, falling back to `C:\Windows\System32\cmd.exe`.
+Linux and macOS use `$SHELL`, falling back to `sh`. Set `config.plugins.terminal.shell`
+to choose a different shell.
 
 ### Usage
 

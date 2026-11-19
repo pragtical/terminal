@@ -1,3 +1,9 @@
+# Unreleased
+
+* Added reusable task terminals with interactive input, streamed output and exit callbacks.
+* Windows terminals now pass command arguments and the working directory to the child process.
+* Windows uses `%COMSPEC%` for the default shell, even when Wine or MSYS sets `SHELL`.
+
 # 1.08
 
 * Ensured that `-lutil` is linked, to ensure greater compatibilty with older Ubuntu distributions.
