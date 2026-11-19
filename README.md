@@ -41,6 +41,10 @@ Programs can also use the standard 256-color palette and explicit RGB colors.
 The **Minimum Contrast Ratio** setting defaults to zero to preserve those colors.
 Raise it if you need more contrast between text and its background.
 
+**Settings → Plugins → Terminal → Draw Box and Block Symbols** is enabled by
+default so borders and progress bars meet at cell edges. Turn it off to draw
+these symbols with the terminal font.
+
 You can also put a `TerminalView` into your main viewing pane by using ``ctrl+shift+` ``
 or by running the `Terminal: Open Tab` command. It can be closed with `ctrl+shift+w`.
 

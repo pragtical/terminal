@@ -6,6 +6,8 @@
 * Terminal text, background, cursor and ANSI colors follow the active editor theme.
 * Advertise truecolor to shells and tasks, preserve application RGB colors by default, and report the theme's foreground and background.
 * Improve rendering of animated text, faint and reverse video, wide characters and combining marks.
+* Draw block graphics and box borders to the terminal grid by default. Turn off **Draw Box and Block Symbols** to use the terminal font.
+* Open terminals follow changes to the editor code font when Use Custom Font is disabled.
 * Support synchronized screen updates and correct cursor placement, wrapping and scrolling in full-screen applications.
 * Forward Alt shortcuts, modified navigation and function keys to the focused terminal. This lets Alt+X open the command palette in `pragtical tui`.
 * `Alt+T` toggles the drawer. `Alt+Shift+T` opens or focuses it.

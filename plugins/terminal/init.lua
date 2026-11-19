@@ -8,12 +8,14 @@ local View = require "core.view"
 local keymap = require "core.keymap"
 local StatusView = require "core.statusview"
 
+local cellgraphics = require "plugins.terminal.cellgraphics"
 local keyboard = require "plugins.terminal.keyboard"
 local modifiers = require("core.modkeys-" .. (PLATFORM == "Mac OS X" and "macos" or "generic"))
 local palette = require "plugins.terminal.palette"
 local terminal_native = require "plugins.terminal.libterminal"
 
-local prev_scale = SCALE
+-- Several views can share a custom font. Apply each UI scale change to it once.
+local font_scales = setmetatable({}, { __mode = "k" })
 local windows = PLATFORM == "Windows"
 local default_shell = os.getenv(windows and "COMSPEC" or "SHELL")
 if not default_shell or default_shell == "" then
@@ -61,7 +63,7 @@ local default_config = {
   -- * MesloLGS NF Regular - https://github.com/romkatv/powerlevel10k-media
   -- You should use both, Julia as main and MesloLGS as fallback.
   font = style.code_font,
-  bold_font = style.code_font:copy(style.code_font:get_size(), { bold = true }),
+  draw_cell_graphics = true,
   -- padding around the edges of the terminal
   padding = { x = 0, y = 0 },
   -- show bold text in bright colors
@@ -82,13 +84,13 @@ default_config.config_spec = set_config_default_values {
   name = "Terminal",
   {
     label = "Use Custom Font",
-    description = "Use the configured custom font for the terminal (requires restart).",
+    description = "Use a separate terminal font. When disabled, follow the editor code font.",
     path = "use_custom_font", type = "TOGGLE",
     default = false
   },
   {
     label = "Font",
-    description = "Custom font to use for the terminal (non-monospace unsupported, great choices are JuliaMono and MesloLGS NF) (requires restart).",
+    description = "Monospace font to use when Use Custom Font is enabled.",
     path = "font", type = "font",
     default = {
       fonts = {
@@ -104,14 +106,15 @@ default_config.config_spec = set_config_default_values {
       }
     },
     on_apply = function()
-      prev_scale = SCALE
-      if not config.plugins.terminal.use_custom_font then
-        config.plugins.terminal.font = style.code_font
-      end
-      config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-        config.plugins.terminal.font:get_size(), { bold = true }
-      )
+      local terminal = config.plugins.terminal
+      font_scales[terminal.font] = SCALE
+      terminal.bold_font = terminal.font:copy(terminal.font:get_size(), { bold = true })
     end
+  },
+  {
+    label = "Draw Box and Block Symbols",
+    description = "Draw borders and blocks aligned to the terminal grid. Turn off to use the terminal font for these symbols.",
+    path = "draw_cell_graphics", type = "TOGGLE"
   },
   {
     label = "Show Bold Text In Bright Colors",
@@ -193,24 +196,7 @@ default_config.config_spec = set_config_default_values {
   }
 }
 config.plugins.terminal = common.merge(default_config, config.plugins.terminal)
-
-core.add_thread(function()
-  -- give time for ui settings (even on editor restart) and then apply font
-  for _=1, 2 do coroutine.yield() end
-  if not config.plugins.terminal.use_custom_font then
-    config.plugins.terminal.font = style.code_font
-    config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-      config.plugins.terminal.font:get_size(), { bold = true }
-    )
-  elseif prev_scale ~= SCALE then
-    config.plugins.terminal.font:set_size(
-      (config.plugins.terminal.font:get_size() / prev_scale) * SCALE
-    )
-    config.plugins.terminal.bold_font = config.plugins.terminal.font:copy(
-      config.plugins.terminal.font:get_size(), { bold = true }
-    )
-  end
-end)
+font_scales[config.plugins.terminal.font] = SCALE
 
 -- contrast functions pulled from https://github.com/xtermjs/xterm.js/blob/99df13b085aecb051f1373c5b7f8e819c4f41442/src/common/Color.ts#L285.
 local function contrastRatio(l1, l2)
@@ -317,7 +303,9 @@ function TerminalView:supports_text_input() return true end
 
 function TerminalView:new(options)
   TerminalView.super.new(self)
-  options = common.merge(common.merge({}, config.plugins.terminal), options)
+  self.font_override = options and options.font
+  self.bold_font_override = options and options.bold_font
+  options = common.merge(config.plugins.terminal, options)
   self.size.y = options.drawer_height
   self.options = options
   self:update_colors()
@@ -447,38 +435,56 @@ function TerminalView:spawn()
 end
 
 
----Can be overriden by widgets to listen for scale change events to apply
----any neccesary changes in sizes, padding, etc...
----@param new_scale number
----@param prev_scale number
-function TerminalView:on_scale_change(new_scale, prev_scale)
-  TerminalView.super.on_scale_change(self, new_scale, prev_scale)
-  if self.options.font ~= style.code_font then
-    self.options.font:set_size(
-      self.options.font:get_size() * (new_scale / prev_scale)
-    )
+-- Settings can replace the editor font group, while zoom resizes it in place.
+-- Refresh the faces and cell metrics for either kind of change.
+local function update_font(self)
+  local terminal = config.plugins.terminal
+  local font, bold = self.font_override, self.bold_font_override
+  if not font and terminal.use_custom_font then
+    font, bold = terminal.font, bold or terminal.bold_font
   end
+  font = font or style.code_font
+  if font ~= style.code_font and font_scales[font] ~= SCALE then
+    local old_scale = font_scales[font]
+    if old_scale then font:set_size(font:get_size() * SCALE / old_scale) end
+    font_scales[font] = SCALE
+  end
+  local font_size = font:get_size()
+  if self.options.font == font and self.last_font_size == font_size and self.last_bold_font == bold then
+    return false
+  end
+  self.options.font, self.last_font_size, self.last_bold_font = font, font_size, bold
+  if not bold then
+    bold = font:copy(font_size, { bold = true })
+  elseif bold:get_size() ~= font_size then
+    bold = bold:copy(font_size)
+  end
+  self.options.bold_font = bold
+  self.italic_font = font:copy(font_size, { italic = true })
+  self.bold_italic_font = font:copy(font_size, { bold = true, italic = true })
+  self.cell_width = math.max(1, math.ceil(font:get_width("M")))
+  self.cell_height = math.max(1, math.ceil(font:get_height()))
+  self.integral_fonts = {}
+  for _, face in ipairs { font, bold, self.italic_font, self.bold_italic_font } do
+    self.integral_fonts[face] = face:get_width("M") == self.cell_width
+  end
+  return true
 end
-
 
 function TerminalView:update()
   if self.closed then return end
   TerminalView.super.update(self)
   if self.task_view and self.size.y <= 0 then return end
   self:update_colors()
-  local font, font_size = self.options.font, self.options.font:get_size()
-  local font_changed = self.last_font ~= font or self.last_font_size ~= font_size
-  if font_changed then
-    self.last_font, self.last_font_size = font, font_size
-    self.options.bold_font:set_size(font_size)
-    self.italic_font = font:copy(font_size, { italic = true })
-    self.bold_italic_font = font:copy(font_size, { bold = true, italic = true })
-    self.cell_width = math.max(1, math.ceil(font:get_width("M")))
-    self.cell_height = math.max(1, math.ceil(font:get_height()))
-    self.integral_fonts = {}
-    for _, face in ipairs { font, self.options.bold_font, self.italic_font, self.bold_italic_font } do
-      self.integral_fonts[face] = face:get_width("M") == self.cell_width
+  local font_changed = update_font(self)
+  if config.plugins.terminal.draw_cell_graphics then
+    if font_changed or not self.cell_shapes then
+      self.cell_shapes = cellgraphics.build(self.cell_width, self.cell_height)
+      core.redraw = true
     end
+  elseif self.cell_shapes then
+    self.cell_shapes = nil
+    core.redraw = true
   end
   if self.size.x > 0 and self.size.y > 0 and (font_changed or not self.terminal or self.last_size.x ~= self.size.x or self.last_size.y ~= self.size.y) then
     self.columns = math.max(math.floor((self.size.x - self.options.padding.x*2) / self.cell_width), 1)
@@ -632,7 +638,14 @@ local function draw_glyphs(view, span, y)
     else
       local gx = x
       for glyph in text:gmatch("[^\128-\191][\128-\191]*") do
-        if glyph ~= " " then renderer.draw_text(face, glyph, gx, y, fg) end
+        local shape = view.cell_shapes and #glyph > 1 and view.cell_shapes[glyph]
+        if shape then
+          for _, rect in ipairs(shape) do
+            renderer.draw_rect(gx + rect[1], y + rect[2], rect[3], rect[4], fg)
+          end
+        elseif glyph ~= " " then
+          renderer.draw_text(face, glyph, gx, y, fg)
+        end
         gx = gx + view.cell_width
       end
     end
