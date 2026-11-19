@@ -1,4 +1,4 @@
-# Unreleased
+# 2.0
 
 * Run commands in a new shell tab or the shared drawer, or launch a dedicated agent tab with a configurable exit policy.
 * Add Terminal: Reset to restore emulator modes. Terminal: Clear now leaves pending shell input unsubmitted.
